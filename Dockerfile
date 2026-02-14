@@ -4,8 +4,8 @@ FROM rust:1-slim-bookworm AS builder
 WORKDIR /app
 COPY . .
 
-# Hub: build WITHOUT the gpio feature (mock valves, no rppal)
-RUN cargo build --release -p irrigation-hub --no-default-features
+# Hub: build without gpio (mock valves — no rppal needed in container)
+RUN cargo build --release -p irrigation-hub
 
 # Node: standard build (already uses fake sensor data)
 RUN cargo build --release -p irrigation-node

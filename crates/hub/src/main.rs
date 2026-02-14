@@ -1,8 +1,14 @@
+mod state;
+mod web;
+
 use anyhow::Result;
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use serde::Deserialize;
-use std::{collections::HashMap, env, time::Duration};
+use std::{collections::HashMap, env, sync::Arc, time::Duration};
+use tokio::sync::RwLock;
 use tokio::time::sleep;
+
+use state::{SensorReading, SystemState};
 
 #[cfg(feature = "gpio")]
 use rppal::gpio::{Gpio, OutputPin};
@@ -15,6 +21,7 @@ struct Reading {
 
 #[derive(Debug, Deserialize)]
 struct ReadingMsg {
+    #[allow(dead_code)]
     ts: i64,
     readings: Vec<Reading>,
 }
@@ -135,6 +142,20 @@ async fn main() -> Result<()> {
     let mut valves = ValveBoard::new(&zone_to_gpio, active_low)?;
     valves.all_off();
 
+    // Shared state for the web UI
+    let shared = Arc::new(RwLock::new(SystemState::new(&zone_to_gpio)));
+    {
+        let mut st = shared.write().await;
+        st.record_system("hub started".to_string());
+    }
+
+    // Spawn the web server
+    let web_state = Arc::clone(&shared);
+    tokio::spawn(async move {
+        web::serve(web_state).await;
+    });
+
+    // MQTT setup
     let client_id = "irrigation-hub";
     let mut mqttoptions = MqttOptions::new(client_id, broker, port);
     mqttoptions.set_keep_alive(Duration::from_secs(30));
@@ -159,9 +180,25 @@ async fn main() -> Result<()> {
                             let parts: Vec<&str> = topic.split('/').collect();
                             let node_id = parts.get(1).copied().unwrap_or("unknown");
 
+                            let readings: Vec<SensorReading> = msg
+                                .readings
+                                .iter()
+                                .map(|r| SensorReading {
+                                    sensor_id: r.sensor_id.clone(),
+                                    raw: r.raw,
+                                })
+                                .collect();
+
                             eprintln!("telemetry node={node_id} ts={} readings={:?}", msg.ts, msg.readings);
+
+                            let mut st = shared.write().await;
+                            st.record_reading(node_id, readings);
                         }
-                        Err(e) => eprintln!("bad telemetry json: {e} topic={topic}"),
+                        Err(e) => {
+                            eprintln!("bad telemetry json: {e} topic={topic}");
+                            let mut st = shared.write().await;
+                            st.record_error(format!("bad telemetry json: {e}"));
+                        }
                     }
                 } else if topic.starts_with("valve/") && topic.ends_with("/set") {
                     // valve/<zone_id>/set
@@ -170,19 +207,49 @@ async fn main() -> Result<()> {
 
                     let s = String::from_utf8_lossy(&payload).trim().to_uppercase();
                     match s.as_str() {
-                        "ON" => valves.set(zone_id, true),
-                        "OFF" => valves.set(zone_id, false),
-                        _ => eprintln!("unknown valve command '{s}' (use ON/OFF)"),
+                        "ON" => {
+                            valves.set(zone_id, true);
+                            let mut st = shared.write().await;
+                            st.record_valve(zone_id, true);
+                        }
+                        "OFF" => {
+                            valves.set(zone_id, false);
+                            let mut st = shared.write().await;
+                            st.record_valve(zone_id, false);
+                        }
+                        _ => {
+                            eprintln!("unknown valve command '{s}' (use ON/OFF)");
+                            let mut st = shared.write().await;
+                            st.record_error(format!("unknown valve command '{s}'"));
+                        }
                     }
                 } else {
                     eprintln!("unhandled topic={topic}");
                 }
+            }
+            Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                eprintln!("mqtt connected");
+                let mut st = shared.write().await;
+                st.mqtt_connected = true;
+                st.record_system("mqtt connected".to_string());
+            }
+            Ok(Event::Incoming(Packet::Disconnect)) => {
+                eprintln!("mqtt disconnected");
+                let mut st = shared.write().await;
+                st.mqtt_connected = false;
+                st.record_system("mqtt disconnected".to_string());
             }
             Ok(_) => {}
             Err(e) => {
                 eprintln!("mqtt error: {e}. reconnecting...");
                 // Best-effort fail-safe: turn everything off on comms error
                 valves.all_off();
+
+                let mut st = shared.write().await;
+                st.mqtt_connected = false;
+                st.record_error(format!("mqtt error: {e}"));
+                drop(st);
+
                 sleep(Duration::from_secs(2)).await;
             }
         }

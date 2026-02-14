@@ -83,9 +83,9 @@ test-node:
 
 .PHONY: cross-hub cross-node cross-all
 
-## Cross-compile hub for Pi 5 (aarch64)
+## Cross-compile hub for Pi 5 (aarch64) with real GPIO
 cross-hub:
-	cross build -p irrigation-hub --release --target $(TARGET_HUB)
+	cross build -p irrigation-hub --release --features gpio --target $(TARGET_HUB)
 
 ## Cross-compile node for Pi Zero W (armv6 / armhf)
 cross-node:

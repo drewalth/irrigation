@@ -14,10 +14,13 @@ services:
       context: .
       dockerfile: Dockerfile
       target: hub
+    ports:
+      - "8080:8080"
     environment:
       MQTT_HOST: mqtt
       MQTT_PORT: "1883"
       RELAY_ACTIVE_LOW: "true"
+      WEB_PORT: "8080"
     depends_on:
       - mqtt
 

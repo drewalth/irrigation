@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Irrigation Hub</title>
+<style>
+  :root {
+    --bg-0: #0b0e11;
+    --bg-1: #141619;
+    --bg-2: #1a1d21;
+    --bg-3: #22262b;
+    --border: #2d3239;
+    --text: #e2e8f0;
+    --text-dim: #8b95a5;
+    --accent: #3b82f6;
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    --radius: 8px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg-0);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  /* ── Header ─────────────────────────────────────────────────────── */
+  .header {
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .header-title {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .mqtt-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 10px;
+    border-radius: 12px;
+    background: var(--bg-3);
+  }
+
+  .mqtt-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--danger);
+    flex-shrink: 0;
+  }
+
+  .mqtt-dot.connected { background: var(--success); }
+
+  /* ── Main layout ────────────────────────────────────────────────── */
+  .main {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  /* ── Stat cards ─────────────────────────────────────────────────── */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+  }
+
+  .stat-card {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+
+  .stat-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 8px;
+  }
+
+  .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+
+  .stat-value.accent { color: var(--accent); }
+
+  /* ── Panel ──────────────────────────────────────────────────────── */
+  .panel {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .panel-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .panel-count {
+    background: var(--bg-3);
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-dim);
+  }
+
+  /* ── Tables ─────────────────────────────────────────────────────── */
+  .table-wrap {
+    overflow-x: auto;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  th {
+    text-align: left;
+    padding: 10px 20px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border);
+  }
+
+  td {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  .mono {
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+    font-size: 12px;
+  }
+
+  /* ── Status indicator ───────────────────────────────────────────── */
+  .status-dot {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 500;
+  }
+
+  .status-dot::before {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .status-dot.healthy::before { background: var(--success); }
+  .status-dot.warning::before { background: var(--warning); }
+  .status-dot.critical::before { background: var(--danger); }
+
+  /* ── Pill badges ────────────────────────────────────────────────── */
+  .pill {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .pill-on {
+    background: rgba(34, 197, 94, 0.15);
+    color: var(--success);
+  }
+
+  .pill-off {
+    background: var(--bg-3);
+    color: var(--text-dim);
+  }
+
+  .pill-reading {
+    background: rgba(59, 130, 246, 0.15);
+    color: var(--accent);
+  }
+
+  .pill-valve {
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--warning);
+  }
+
+  .pill-error {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--danger);
+  }
+
+  .pill-system {
+    background: var(--bg-3);
+    color: var(--text-dim);
+  }
+
+  /* ── Event log ──────────────────────────────────────────────────── */
+  .events-list {
+    max-height: 360px;
+    overflow-y: auto;
+  }
+
+  .event-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+
+  .event-row:last-child { border-bottom: none; }
+
+  .event-ts {
+    color: var(--text-dim);
+    font-size: 12px;
+    font-family: "SF Mono", "Fira Code", monospace;
+    white-space: nowrap;
+    min-width: 80px;
+  }
+
+  .event-detail {
+    color: var(--text);
+    word-break: break-word;
+  }
+
+  /* ── Empty state ────────────────────────────────────────────────── */
+  .empty {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+
+  /* ── Scrollbar ──────────────────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border); }
+
+  /* ── Two-column layout for panels ───────────────────────────────── */
+  .panels-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  @media (max-width: 900px) {
+    .panels-row { grid-template-columns: 1fr; }
+  }
+
+  /* ── Readings chips ─────────────────────────────────────────────── */
+  .readings {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .reading-chip {
+    background: var(--bg-3);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Header ────────────────────────────────────────────────────── -->
+<div class="header">
+  <div class="header-left">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6"/><path d="M12 22v-6"/><path d="M4.93 4.93l4.24 4.24"/><path d="M14.83 14.83l4.24 4.24"/><path d="M2 12h6"/><path d="M16 12h6"/><path d="M4.93 19.07l4.24-4.24"/><path d="M14.83 9.17l4.24-4.24"/></svg>
+    <span class="header-title">Irrigation Hub</span>
+  </div>
+  <div class="header-right">
+    <div class="mqtt-badge">
+      <span class="mqtt-dot" id="mqttDot"></span>
+      <span id="mqttLabel">Disconnected</span>
+    </div>
+    <span id="uptime">--</span>
+  </div>
+</div>
+
+<!-- ── Main ──────────────────────────────────────────────────────── -->
+<div class="main">
+
+  <!-- Stat cards -->
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-label">Nodes Online</div>
+      <div class="stat-value accent" id="statNodes">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Active Zones</div>
+      <div class="stat-value" id="statZonesActive">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total Zones</div>
+      <div class="stat-value" id="statZonesTotal">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Last Reading</div>
+      <div class="stat-value" id="statLastReading">--</div>
+    </div>
+  </div>
+
+  <!-- Nodes + Zones side by side -->
+  <div class="panels-row">
+
+    <!-- Nodes panel -->
+    <div class="panel">
+      <div class="panel-header">
+        Nodes
+        <span class="panel-count" id="nodeCount">0</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Node</th><th>Status</th><th>Last Seen</th><th>Readings</th></tr>
+          </thead>
+          <tbody id="nodesBody">
+            <tr><td colspan="4" class="empty">No nodes reporting yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Zones panel -->
+    <div class="panel">
+      <div class="panel-header">
+        Zones
+        <span class="panel-count" id="zoneCount">0</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Zone</th><th>Valve</th><th>GPIO</th><th>Last Changed</th></tr>
+          </thead>
+          <tbody id="zonesBody">
+            <tr><td colspan="4" class="empty">No zones configured</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Event log -->
+  <div class="panel">
+    <div class="panel-header">
+      Event Log
+      <span class="panel-count" id="eventCount">0</span>
+    </div>
+    <div class="events-list" id="eventsList">
+      <div class="empty">No events recorded yet</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const POLL_MS = 3000;
+  const STALE_WARN_S = 30;
+  const STALE_CRIT_S = 120;
+
+  // ── DOM refs ──────────────────────────────────────────────────────
+  const mqttDot       = document.getElementById("mqttDot");
+  const mqttLabel     = document.getElementById("mqttLabel");
+  const uptimeEl      = document.getElementById("uptime");
+  const statNodes     = document.getElementById("statNodes");
+  const statZonesAct  = document.getElementById("statZonesActive");
+  const statZonesTot  = document.getElementById("statZonesTotal");
+  const statLastRead  = document.getElementById("statLastReading");
+  const nodeCount     = document.getElementById("nodeCount");
+  const nodesBody     = document.getElementById("nodesBody");
+  const zoneCount     = document.getElementById("zoneCount");
+  const zonesBody     = document.getElementById("zonesBody");
+  const eventCount    = document.getElementById("eventCount");
+  const eventsList    = document.getElementById("eventsList");
+
+  // ── Helpers ───────────────────────────────────────────────────────
+  function fmtDuration(totalSec) {
+    const d = Math.floor(totalSec / 86400);
+    const h = Math.floor((totalSec % 86400) / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (d > 0) return d + "d " + h + "h " + m + "m";
+    if (h > 0) return h + "h " + m + "m " + s + "s";
+    if (m > 0) return m + "m " + s + "s";
+    return s + "s";
+  }
+
+  function ageSec(isoStr) {
+    return Math.max(0, Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000));
+  }
+
+  function fmtAge(isoStr) {
+    if (!isoStr) return "--";
+    const s = ageSec(isoStr);
+    if (s < 5) return "just now";
+    return fmtDuration(s) + " ago";
+  }
+
+  function fmtTime(isoStr) {
+    if (!isoStr) return "--";
+    const d = new Date(isoStr);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+
+  function nodeStatus(isoStr) {
+    const s = ageSec(isoStr);
+    if (s < STALE_WARN_S)  return { cls: "healthy",  label: "Healthy" };
+    if (s < STALE_CRIT_S)  return { cls: "warning",  label: "Stale" };
+    return { cls: "critical", label: "Offline" };
+  }
+
+  function kindPill(kind) {
+    const map = { reading: "pill-reading", valve: "pill-valve", error: "pill-error", system: "pill-system" };
+    return '<span class="pill ' + (map[kind] || "pill-system") + '">' + kind + "</span>";
+  }
+
+  function escHtml(str) {
+    const el = document.createElement("span");
+    el.textContent = str;
+    return el.innerHTML;
+  }
+
+  // ── Render ────────────────────────────────────────────────────────
+  function render(data) {
+    // MQTT badge
+    if (data.mqtt_connected) {
+      mqttDot.classList.add("connected");
+      mqttLabel.textContent = "MQTT Connected";
+    } else {
+      mqttDot.classList.remove("connected");
+      mqttLabel.textContent = "MQTT Disconnected";
+    }
+
+    // Uptime
+    uptimeEl.textContent = "up " + fmtDuration(data.uptime_secs);
+
+    // Nodes
+    const nodeIds = Object.keys(data.nodes).sort();
+    let healthyCount = 0;
+    let newestReading = null;
+
+    nodeCount.textContent = nodeIds.length;
+
+    if (nodeIds.length === 0) {
+      nodesBody.innerHTML = '<tr><td colspan="4" class="empty">No nodes reporting yet</td></tr>';
+    } else {
+      let html = "";
+      for (const id of nodeIds) {
+        const n = data.nodes[id];
+        const st = nodeStatus(n.last_seen);
+        if (st.cls === "healthy") healthyCount++;
+
+        if (!newestReading || new Date(n.last_seen) > new Date(newestReading)) {
+          newestReading = n.last_seen;
+        }
+
+        let readingsHtml = '<div class="readings">';
+        for (const r of n.readings) {
+          readingsHtml += '<span class="reading-chip">' + escHtml(r.sensor_id) + "=" + r.raw + "</span>";
+        }
+        readingsHtml += "</div>";
+
+        html += "<tr>"
+          + '<td class="mono">' + escHtml(id) + "</td>"
+          + '<td><span class="status-dot ' + st.cls + '">' + st.label + "</span></td>"
+          + "<td>" + fmtAge(n.last_seen) + "</td>"
+          + "<td>" + readingsHtml + "</td>"
+          + "</tr>";
+      }
+      nodesBody.innerHTML = html;
+    }
+
+    statNodes.textContent = healthyCount + " / " + nodeIds.length;
+    statLastRead.textContent = newestReading ? fmtAge(newestReading) : "--";
+
+    // Zones
+    const zoneIds = Object.keys(data.zones).sort();
+    let activeCount = 0;
+
+    zoneCount.textContent = zoneIds.length;
+    statZonesTot.textContent = zoneIds.length;
+
+    if (zoneIds.length === 0) {
+      zonesBody.innerHTML = '<tr><td colspan="4" class="empty">No zones configured</td></tr>';
+    } else {
+      let html = "";
+      for (const id of zoneIds) {
+        const z = data.zones[id];
+        if (z.on) activeCount++;
+
+        const valvePill = z.on
+          ? '<span class="pill pill-on">ON</span>'
+          : '<span class="pill pill-off">OFF</span>';
+
+        html += "<tr>"
+          + '<td class="mono">' + escHtml(id) + "</td>"
+          + "<td>" + valvePill + "</td>"
+          + '<td class="mono">' + z.gpio_pin + "</td>"
+          + "<td>" + fmtAge(z.last_changed) + "</td>"
+          + "</tr>";
+      }
+      zonesBody.innerHTML = html;
+    }
+
+    statZonesAct.textContent = activeCount;
+
+    // Events
+    const events = data.events || [];
+    eventCount.textContent = events.length;
+
+    if (events.length === 0) {
+      eventsList.innerHTML = '<div class="empty">No events recorded yet</div>';
+    } else {
+      let html = "";
+      for (const ev of events) {
+        html += '<div class="event-row">'
+          + '<span class="event-ts">' + fmtTime(ev.ts) + "</span>"
+          + kindPill(ev.kind)
+          + '<span class="event-detail">' + escHtml(ev.detail) + "</span>"
+          + "</div>";
+      }
+      eventsList.innerHTML = html;
+    }
+  }
+
+  // ── Poll loop ─────────────────────────────────────────────────────
+  async function poll() {
+    try {
+      const resp = await fetch("/api/status");
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const data = await resp.json();
+      render(data);
+    } catch (err) {
+      console.error("poll error:", err);
+      mqttDot.classList.remove("connected");
+      mqttLabel.textContent = "Hub Unreachable";
+    }
+  }
+
+  poll();
+  setInterval(poll, POLL_MS);
+})();
+</script>
+</body>
+</html>
