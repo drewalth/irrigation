@@ -1,4 +1,13 @@
-# ── Builder ───────────────────────────────────────────────────────
+# ── UI builder ────────────────────────────────────────────────────
+FROM node:22-alpine AS ui-builder
+
+WORKDIR /ui
+COPY crates/hub/src/ui/package.json crates/hub/src/ui/package-lock.json ./
+RUN npm ci
+COPY crates/hub/src/ui/ .
+RUN npm run build
+
+# ── Rust builder ──────────────────────────────────────────────────
 FROM rust:1-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -7,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY . .
+
+# Inject the UI build output so include_str!("ui/dist/index.html") resolves.
+COPY --from=ui-builder /ui/dist/index.html crates/hub/src/ui/dist/index.html
 
 # Create the compile-time SQLite DB that sqlx::query! macros validate against.
 RUN sqlite3 crates/hub/irrigation.db < crates/hub/migrations/0001_init.sql

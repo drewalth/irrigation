@@ -34,7 +34,9 @@ export function useSensors(): UsePollingResult<SensorConfig[]> {
   return usePolling(fetchSensors, SLOW);
 }
 
-export function useReadings(params: ReadingsParams = {}): UsePollingResult<ReadingRow[]> {
+export function useReadings(
+  params: ReadingsParams = {},
+): UsePollingResult<ReadingRow[]> {
   const fetcher = useMemo(
     () => () => fetchReadings(params),
     [params.sensor_id, params.zone_id, params.limit, params.offset],
@@ -42,7 +44,9 @@ export function useReadings(params: ReadingsParams = {}): UsePollingResult<Readi
   return usePolling(fetcher, SLOW);
 }
 
-export function useWateringEvents(params: WateringEventsParams = {}): UsePollingResult<WateringEventRow[]> {
+export function useWateringEvents(
+  params: WateringEventsParams = {},
+): UsePollingResult<WateringEventRow[]> {
   const fetcher = useMemo(
     () => () => fetchWateringEvents(params),
     [params.zone_id, params.limit, params.offset],
@@ -50,7 +54,10 @@ export function useWateringEvents(params: WateringEventsParams = {}): UsePolling
   return usePolling(fetcher, SLOW);
 }
 
-export function useCounters(zoneId: string, day?: string): UsePollingResult<DailyCounters> {
+export function useCounters(
+  zoneId: string,
+  day?: string,
+): UsePollingResult<DailyCounters> {
   const fetcher = useMemo(
     () => () => fetchCounters(zoneId, day),
     [zoneId, day],

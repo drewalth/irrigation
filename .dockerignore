@@ -1,0 +1,7 @@
+target/
+.git/
+.cursor/
+**/node_modules/
+**/dist/
+*.md
+.gitignore

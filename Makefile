@@ -11,28 +11,107 @@ HUB_HOST  ?= pi5.local
 NODE_HOST ?= pizero.local
 REMOTE_USER ?= pi
 
+# Web UI source directory
+UI_DIR := crates/hub/src/ui
+
+# sqlx compile-time database
+SQLX_DB     := crates/hub/irrigation.db
+SQLX_MIGRATION := crates/hub/migrations/0001_init.sql
+
+# Minimum required Node.js version (major.minor.patch)
+NODE_MIN_MAJOR := 22
+NODE_MIN_MINOR := 12
+NODE_MIN_PATCH := 0
+
+# ── Web UI ───────────────────────────────────────────────────────
+
+.PHONY: build-ui
+
+## Build the web UI (requires Node.js / npm)
+build-ui:
+	cd $(UI_DIR) && npm ci && npm run build
+
+# ── Setup (dev environment) ──────────────────────────────────────
+
+.PHONY: setup _check-tools _check-node-version _setup-ui _setup-db
+
+## Prepare the development environment
+setup: _check-tools _check-node-version _setup-ui _setup-db
+	@echo ""
+	@echo "  ✓ Setup complete. You can now run:"
+	@echo "      make build       — debug build"
+	@echo "      make run-hub     — run hub locally"
+	@echo ""
+
+## Verify required CLI tools are available
+_check-tools:
+	@echo "── Checking required tools ──"
+	@command -v node   >/dev/null 2>&1 || { echo "  ✗ node not found. Install via nvm: https://github.com/nvm-sh/nvm"; exit 1; }
+	@echo "  node   $(shell node --version 2>/dev/null || echo 'missing')"
+	@command -v npm    >/dev/null 2>&1 || { echo "  ✗ npm not found (comes with node)"; exit 1; }
+	@echo "  npm    $(shell npm --version 2>/dev/null || echo 'missing')"
+	@command -v cargo  >/dev/null 2>&1 || { echo "  ✗ cargo not found. Install via rustup: https://rustup.rs"; exit 1; }
+	@echo "  cargo  $(shell cargo --version 2>/dev/null | cut -d' ' -f2 || echo 'missing')"
+	@command -v sqlite3 >/dev/null 2>&1 || { echo "  ✗ sqlite3 not found. Install via your package manager."; exit 1; }
+	@echo "  sqlite3 $(shell sqlite3 --version 2>/dev/null | cut -d' ' -f1 || echo 'missing')"
+
+## Validate Node.js version satisfies >=22.12.0
+_check-node-version:
+	@echo "── Checking Node.js version ──"
+	@NODE_VER=$$(node --version | sed 's/^v//'); \
+	MAJOR=$$(echo "$$NODE_VER" | cut -d. -f1); \
+	MINOR=$$(echo "$$NODE_VER" | cut -d. -f2); \
+	PATCH=$$(echo "$$NODE_VER" | cut -d. -f3); \
+	OK=0; \
+	if [ "$$MAJOR" -gt $(NODE_MIN_MAJOR) ]; then OK=1; \
+	elif [ "$$MAJOR" -eq $(NODE_MIN_MAJOR) ] && [ "$$MINOR" -gt $(NODE_MIN_MINOR) ]; then OK=1; \
+	elif [ "$$MAJOR" -eq $(NODE_MIN_MAJOR) ] && [ "$$MINOR" -eq $(NODE_MIN_MINOR) ] && [ "$$PATCH" -ge $(NODE_MIN_PATCH) ]; then OK=1; \
+	fi; \
+	if [ "$$OK" -ne 1 ]; then \
+		echo "  ✗ Node.js $$NODE_VER is too old (need >=$(NODE_MIN_MAJOR).$(NODE_MIN_MINOR).$(NODE_MIN_PATCH))"; \
+		echo "    Run: nvm install   (uses .nvmrc → Node $(NODE_MIN_MAJOR))"; \
+		echo "    Then: nvm use"; \
+		exit 1; \
+	fi; \
+	echo "  Node.js $$NODE_VER — OK"
+
+## Install UI dependencies
+_setup-ui:
+	@echo "── Installing UI dependencies ──"
+	cd $(UI_DIR) && npm ci
+
+## Create the compile-time SQLite DB for sqlx macros (if missing)
+_setup-db:
+	@echo "── Initializing sqlx compile-time DB ──"
+	@if [ -f $(SQLX_DB) ]; then \
+		echo "  $(SQLX_DB) already exists — skipping"; \
+	else \
+		sqlite3 $(SQLX_DB) < $(SQLX_MIGRATION); \
+		echo "  Created $(SQLX_DB)"; \
+	fi
+
 # ── Development (native) ─────────────────────────────────────────
 
 .PHONY: build check test clippy fmt fmt-check clean doc
 
 ## Build the entire workspace (debug)
-build:
+build: build-ui
 	cargo build --workspace
 
 ## Build the entire workspace (release)
-release:
+release: build-ui
 	cargo build --workspace --release
 
 ## Type-check without producing binaries
-check:
+check: build-ui
 	cargo check --workspace
 
 ## Run all tests
-test:
+test: build-ui
 	cargo test --workspace
 
 ## Run clippy lints (deny warnings)
-clippy:
+clippy: build-ui
 	cargo clippy --workspace -- -D warnings
 
 ## Check formatting (CI-friendly, no mutation)
@@ -56,7 +135,7 @@ doc:
 .PHONY: build-hub build-node run-hub run-node test-hub test-node
 
 ## Build hub crate only (debug)
-build-hub:
+build-hub: build-ui
 	cargo build -p irrigation-hub
 
 ## Build node crate only (debug)
@@ -64,7 +143,7 @@ build-node:
 	cargo build -p irrigation-node
 
 ## Run hub locally
-run-hub:
+run-hub: build-ui
 	cargo run -p irrigation-hub
 
 ## Run node locally
@@ -72,7 +151,7 @@ run-node:
 	cargo run -p irrigation-node
 
 ## Test hub crate only
-test-hub:
+test-hub: build-ui
 	cargo test -p irrigation-hub
 
 ## Test node crate only
@@ -84,7 +163,7 @@ test-node:
 .PHONY: cross-hub cross-node cross-all
 
 ## Cross-compile hub for Pi 5 (aarch64) with real GPIO
-cross-hub:
+cross-hub: build-ui
 	cross build -p irrigation-hub --release --features gpio --target $(TARGET_HUB)
 
 ## Cross-compile node for Pi Zero W (armv6 / armhf)
@@ -143,9 +222,13 @@ help:
 	@echo "  Irrigation System — Make Targets"
 	@echo "  ─────────────────────────────────"
 	@echo ""
+	@echo "  Setup:"
+	@echo "    setup        Prepare dev environment (tools, node, npm, sqlx db)"
+	@echo ""
 	@echo "  Development:"
 	@echo "    build        Build workspace (debug)"
 	@echo "    release      Build workspace (release)"
+	@echo "    build-ui     Build web UI (npm ci + vite build)"
 	@echo "    check        Type-check only"
 	@echo "    test         Run all tests"
 	@echo "    clippy       Lint with clippy (-D warnings)"

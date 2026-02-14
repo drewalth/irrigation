@@ -1,30 +1,30 @@
-import { useMemo, useState } from "preact/hooks"
-import { useWateringEvents, useZones } from "@/hooks/use-api"
-import { DataTable, type Column } from "@/components/data-table"
-import { ZoneSelector } from "@/components/zone-selector"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Skeleton } from "@/components/ui/skeleton"
-import { IconChevronLeft, IconChevronRight } from "@tabler/icons-react"
-import type { WateringEventRow } from "@/types"
+import { useMemo, useState } from "preact/hooks";
+import { useWateringEvents, useZones } from "@/hooks/use-api";
+import { DataTable, type Column } from "@/components/data-table";
+import { ZoneSelector } from "@/components/zone-selector";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { IconChevronLeft, IconChevronRight } from "@tabler/icons-react";
+import type { WateringEventRow } from "@/types";
 
-const PAGE_SIZE = 10
+const PAGE_SIZE = 10;
 
 function formatDuration(start: number, end: number): string {
-  const diff = Math.max(0, end - start)
-  const mins = Math.floor(diff / 60)
-  const secs = diff % 60
-  if (mins === 0) return `${secs}s`
-  return `${mins}m ${secs}s`
+  const diff = Math.max(0, end - start);
+  const mins = Math.floor(diff / 60);
+  const secs = diff % 60;
+  if (mins === 0) return `${secs}s`;
+  return `${mins}m ${secs}s`;
 }
 
 function formatTs(epoch: number): string {
-  return new Date(epoch * 1000).toLocaleString()
+  return new Date(epoch * 1000).toLocaleString();
 }
 
 export function WateringEventsTable() {
-  const [zoneFilter, setZoneFilter] = useState("__all__")
-  const [offset, setOffset] = useState(0)
+  const [zoneFilter, setZoneFilter] = useState("__all__");
+  const [offset, setOffset] = useState(0);
 
   const params = useMemo(
     () => ({
@@ -33,16 +33,16 @@ export function WateringEventsTable() {
       offset,
     }),
     [zoneFilter, offset],
-  )
+  );
 
-  const { data: events, loading } = useWateringEvents(params)
-  const { data: zones } = useZones()
+  const { data: events, loading } = useWateringEvents(params);
+  const { data: zones } = useZones();
 
   const zoneMap = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const z of zones ?? []) m.set(z.zone_id, z.name)
-    return m
-  }, [zones])
+    const m = new Map<string, string>();
+    for (const z of zones ?? []) m.set(z.zone_id, z.name);
+    return m;
+  }, [zones]);
 
   const columns: Column<WateringEventRow>[] = useMemo(
     () => [
@@ -89,12 +89,12 @@ export function WateringEventsTable() {
       },
     ],
     [zoneMap],
-  )
+  );
 
   const handleZoneChange = (value: string) => {
-    setZoneFilter(value)
-    setOffset(0)
-  }
+    setZoneFilter(value);
+    setOffset(0);
+  };
 
   if (loading && !events) {
     return (
@@ -103,7 +103,7 @@ export function WateringEventsTable() {
           <Skeleton key={i} className="h-10 w-full" />
         ))}
       </div>
-    )
+    );
   }
 
   return (
@@ -139,5 +139,5 @@ export function WateringEventsTable() {
         </Button>
       </div>
     </div>
-  )
+  );
 }

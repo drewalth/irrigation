@@ -1,36 +1,28 @@
-import { useStatus } from "@/hooks/use-api"
-import { Badge } from "@/components/ui/badge"
-import { Separator } from "@/components/ui/separator"
-import { SidebarTrigger } from "@/components/ui/sidebar"
+import { useStatus } from "@/hooks/use-api";
+import { Separator } from "@/components/ui/separator";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 import {
   Breadcrumb,
   BreadcrumbItem,
   BreadcrumbList,
   BreadcrumbPage,
-} from "@/components/ui/breadcrumb"
+} from "@/components/ui/breadcrumb";
 
 const pageLabels: Record<string, string> = {
   overview: "Overview",
   zones: "Zones",
   sensors: "Sensors",
   events: "Events",
-}
-
-function formatUptime(secs: number): string {
-  const d = Math.floor(secs / 86400)
-  const h = Math.floor((secs % 86400) / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  return `${d}d ${h}h ${m}m`
-}
+};
 
 interface SiteHeaderProps {
-  currentPage: string
+  currentPage: string;
 }
 
 export function SiteHeader({ currentPage }: SiteHeaderProps) {
-  const { data: status } = useStatus()
-  const mqttConnected = status?.mqtt_connected ?? false
-  const uptimeSecs = status?.uptime_secs ?? 0
+  const { data: status } = useStatus();
+  const mqttConnected = status?.mqtt_connected ?? false;
+  const uptimeSecs = status?.uptime_secs ?? 0;
 
   return (
     <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-(--header-height)">
@@ -43,12 +35,14 @@ export function SiteHeader({ currentPage }: SiteHeaderProps) {
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
-              <BreadcrumbPage>{pageLabels[currentPage] ?? currentPage}</BreadcrumbPage>
+              <BreadcrumbPage>
+                {pageLabels[currentPage] ?? currentPage}
+              </BreadcrumbPage>
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
 
-        <div className="ml-auto flex items-center gap-2">
+        {/* <div className="ml-auto flex items-center gap-2">
           {status && (
             <Badge variant="outline" className="text-xs">
               {formatUptime(uptimeSecs)}
@@ -65,8 +59,8 @@ export function SiteHeader({ currentPage }: SiteHeaderProps) {
             />
             {mqttConnected ? "Connected" : "Disconnected"}
           </Badge>
-        </div>
+        </div> */}
       </div>
     </header>
-  )
+  );
 }

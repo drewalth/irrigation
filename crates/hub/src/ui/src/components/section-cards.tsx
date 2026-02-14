@@ -1,7 +1,7 @@
-import { useEffect, useState } from "preact/hooks"
+import { useEffect, useState } from "preact/hooks";
 
-import { fetchCounters } from "@/api"
-import { Badge } from "@/components/ui/badge"
+import { fetchCounters } from "@/api";
+import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardAction,
@@ -9,83 +9,83 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card"
-import { Skeleton } from "@/components/ui/skeleton"
-import { useStatus, useZones } from "@/hooks/use-api"
-import type { DailyCounters } from "@/types"
+} from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useStatus, useZones } from "@/hooks/use-api";
+import type { DailyCounters } from "@/types";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
 function formatUptime(secs: number): string {
-  const d = Math.floor(secs / 86400)
-  const h = Math.floor((secs % 86400) / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  return `${d}d ${h}h ${m}m`
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return `${d}d ${h}h ${m}m`;
 }
 
 function formatDuration(secs: number): string {
-  const m = Math.floor(secs / 60)
-  const s = Math.round(secs % 60)
-  return `${m}m ${s}s`
+  const m = Math.floor(secs / 60);
+  const s = Math.round(secs % 60);
+  return `${m}m ${s}s`;
 }
 
 function today(): string {
-  return new Date().toISOString().slice(0, 10)
+  return new Date().toISOString().slice(0, 10);
 }
 
 // ── Section Cards ────────────────────────────────────────────────
 
 export function SectionCards() {
-  const { data: status, loading: statusLoading } = useStatus()
-  const { data: zones, loading: zonesLoading } = useZones()
+  const { data: status, loading: statusLoading } = useStatus();
+  const { data: zones, loading: zonesLoading } = useZones();
 
   // Fetch counters for all zones in parallel
-  const [counters, setCounters] = useState<DailyCounters[]>([])
-  const [countersLoading, setCountersLoading] = useState(true)
+  const [counters, setCounters] = useState<DailyCounters[]>([]);
+  const [countersLoading, setCountersLoading] = useState(true);
 
   useEffect(() => {
-    if (!zones || zones.length === 0) return
-    let cancelled = false
-    const day = today()
+    if (!zones || zones.length === 0) return;
+    let cancelled = false;
+    const day = today();
 
     const doFetch = () => {
       Promise.all(
         zones.map((z) => fetchCounters(z.zone_id, day).catch(() => null)),
       ).then((results) => {
-        if (cancelled) return
-        setCounters(results.filter((r): r is DailyCounters => r !== null))
-        setCountersLoading(false)
-      })
-    }
+        if (cancelled) return;
+        setCounters(results.filter((r): r is DailyCounters => r !== null));
+        setCountersLoading(false);
+      });
+    };
 
-    doFetch()
-    const id = setInterval(doFetch, 30_000)
+    doFetch();
+    const id = setInterval(doFetch, 30_000);
     return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-  }, [zones])
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [zones]);
 
   // ── Derived values ───────────────────────────────────────────
 
-  const zoneEntries = status ? Object.entries(status.zones) : []
-  const activeZones = zoneEntries.filter(([, z]) => z.on)
-  const totalZones = zones?.length ?? zoneEntries.length
+  const zoneEntries = status ? Object.entries(status.zones) : [];
+  const activeZones = zoneEntries.filter(([, z]) => z.on);
+  const totalZones = zones?.length ?? zoneEntries.length;
 
-  const nodeEntries = status ? Object.entries(status.nodes) : []
-  const staleThresholdMs = 10 * 60 * 1000
-  const now = Date.now()
+  const nodeEntries = status ? Object.entries(status.nodes) : [];
+  const staleThresholdMs = 10 * 60 * 1000;
+  const now = Date.now();
   const staleNodes = nodeEntries.filter(
     ([, n]) => now - new Date(n.last_seen).getTime() > staleThresholdMs,
-  )
+  );
 
-  const totalOpenSec = counters.reduce((sum, c) => sum + c.open_sec, 0)
-  const totalPulses = counters.reduce((sum, c) => sum + c.pulses, 0)
+  const totalOpenSec = counters.reduce((sum, c) => sum + c.open_sec, 0);
+  const totalPulses = counters.reduce((sum, c) => sum + c.pulses, 0);
 
-  const mqttOk = status?.mqtt_connected ?? false
-  const isHealthy = mqttOk
+  const mqttOk = status?.mqtt_connected ?? false;
+  const isHealthy = mqttOk;
 
-  const zoneNameMap = new Map(zones?.map((z) => [z.zone_id, z.name]) ?? [])
+  const zoneNameMap = new Map(zones?.map((z) => [z.zone_id, z.name]) ?? []);
 
   return (
     <div className="*:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card dark:*:data-[slot=card]:bg-card grid grid-cols-1 gap-4 px-4 *:data-[slot=card]:bg-gradient-to-t *:data-[slot=card]:shadow-xs lg:px-6 @xl/main:grid-cols-2 @5xl/main:grid-cols-4">
@@ -269,5 +269,5 @@ export function SectionCards() {
         </CardFooter>
       </Card>
     </div>
-  )
+  );
 }

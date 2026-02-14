@@ -1,60 +1,60 @@
-import { useEffect, useState } from "preact/hooks"
+import { useEffect, useState } from "preact/hooks";
 
-import { fetchCounters } from "@/api"
-import { Badge } from "@/components/ui/badge"
+import { fetchCounters } from "@/api";
+import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card"
-import { Skeleton } from "@/components/ui/skeleton"
-import { useSensors, useStatus, useZones } from "@/hooks/use-api"
+} from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useSensors, useStatus, useZones } from "@/hooks/use-api";
 import type {
   DailyCounters,
   SensorConfig,
   SensorReading,
   ZoneConfig,
   ZoneState,
-} from "@/types"
+} from "@/types";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
 function today(): string {
-  return new Date().toISOString().slice(0, 10)
+  return new Date().toISOString().slice(0, 10);
 }
 
 function formatDuration(secs: number): string {
-  const m = Math.floor(secs / 60)
-  const s = Math.round(secs % 60)
-  return `${m}m ${s}s`
+  const m = Math.floor(secs / 60);
+  const s = Math.round(secs % 60);
+  return `${m}m ${s}s`;
 }
 
 function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime()
-  if (diff < 0) return "just now"
-  const secs = Math.floor(diff / 1000)
-  if (secs < 60) return `${secs}s ago`
-  const mins = Math.floor(secs / 60)
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  const days = Math.floor(hrs / 24)
-  return `${days}d ago`
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 0) return "just now";
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
 }
 
 function clamp(v: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, v))
+  return Math.min(max, Math.max(min, v));
 }
 
 function computeMoisture(raw: number, sensor: SensorConfig): number {
-  if (sensor.raw_dry === sensor.raw_wet) return 0
+  if (sensor.raw_dry === sensor.raw_wet) return 0;
   return clamp(
     (sensor.raw_dry - raw) / (sensor.raw_dry - sensor.raw_wet),
     0,
     1,
-  )
+  );
 }
 
 function moistureBarColor(
@@ -62,15 +62,15 @@ function moistureBarColor(
   minMoisture: number,
   targetMoisture: number,
 ): string {
-  if (pct < minMoisture) return "bg-red-500"
-  if (pct < targetMoisture) return "bg-amber-500"
-  return "bg-green-500"
+  if (pct < minMoisture) return "bg-red-500";
+  if (pct < targetMoisture) return "bg-amber-500";
+  return "bg-green-500";
 }
 
 function usageBarColor(ratio: number): string {
-  if (ratio >= 0.9) return "bg-red-500"
-  if (ratio >= 0.7) return "bg-amber-500"
-  return "bg-blue-500"
+  if (ratio >= 0.9) return "bg-red-500";
+  if (ratio >= 0.7) return "bg-amber-500";
+  return "bg-blue-500";
 }
 
 // ── Progress Bar ─────────────────────────────────────────────────
@@ -81,12 +81,12 @@ function ProgressBar({
   colorClass,
   label,
 }: {
-  value: number
-  max: number
-  colorClass: string
-  label: string
+  value: number;
+  max: number;
+  colorClass: string;
+  label: string;
 }) {
-  const pct = max > 0 ? clamp((value / max) * 100, 0, 100) : 0
+  const pct = max > 0 ? clamp((value / max) * 100, 0, 100) : 0;
   return (
     <div className="space-y-1">
       <div className="flex justify-between text-xs text-muted-foreground">
@@ -100,7 +100,7 @@ function ProgressBar({
         />
       </div>
     </div>
-  )
+  );
 }
 
 // ── Zone Card ────────────────────────────────────────────────────
@@ -113,43 +113,39 @@ function ZoneCard({
   counters,
   countersLoading,
 }: {
-  zone: ZoneConfig
-  state: ZoneState | undefined
-  sensors: SensorConfig[]
-  allReadings: Record<string, SensorReading[]>
-  counters: DailyCounters | null
-  countersLoading: boolean
+  zone: ZoneConfig;
+  state: ZoneState | undefined;
+  sensors: SensorConfig[];
+  allReadings: Record<string, SensorReading[]>;
+  counters: DailyCounters | null;
+  countersLoading: boolean;
 }) {
-  const isOn = state?.on ?? false
+  const isOn = state?.on ?? false;
 
   // Find the latest moisture reading for sensors belonging to this zone
-  const zoneSensors = sensors.filter((s) => s.zone_id === zone.zone_id)
-  let latestMoisture: number | null = null
+  const zoneSensors = sensors.filter((s) => s.zone_id === zone.zone_id);
+  let latestMoisture: number | null = null;
   for (const sensor of zoneSensors) {
     for (const readings of Object.values(allReadings)) {
-      const reading = readings.find((r) => r.sensor_id === sensor.sensor_id)
+      const reading = readings.find((r) => r.sensor_id === sensor.sensor_id);
       if (reading) {
-        latestMoisture = computeMoisture(reading.raw, sensor)
-        break
+        latestMoisture = computeMoisture(reading.raw, sensor);
+        break;
       }
     }
-    if (latestMoisture !== null) break
+    if (latestMoisture !== null) break;
   }
 
   const openSecRatio = counters
     ? counters.open_sec / zone.max_open_sec_per_day
-    : 0
-  const pulsesRatio = counters
-    ? counters.pulses / zone.max_pulses_per_day
-    : 0
+    : 0;
+  const pulsesRatio = counters ? counters.pulses / zone.max_pulses_per_day : 0;
 
   return (
     <Card className="@container/card">
       <CardHeader>
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base font-semibold">
-            {zone.name}
-          </CardTitle>
+          <CardTitle className="text-base font-semibold">{zone.name}</CardTitle>
           <Badge
             variant="outline"
             className={
@@ -220,26 +216,26 @@ function ZoneCard({
         )}
       </CardContent>
     </Card>
-  )
+  );
 }
 
 // ── Zone Cards Grid ──────────────────────────────────────────────
 
 export function ZoneCards() {
-  const { data: status, loading: statusLoading } = useStatus()
-  const { data: zones, loading: zonesLoading } = useZones()
-  const { data: sensors } = useSensors()
+  const { data: status, loading: statusLoading } = useStatus();
+  const { data: zones, loading: zonesLoading } = useZones();
+  const { data: sensors } = useSensors();
 
   // Fetch counters for all zones in parallel
-  const [countersMap, setCountersMap] = useState<
-    Record<string, DailyCounters>
-  >({})
-  const [countersLoading, setCountersLoading] = useState(true)
+  const [countersMap, setCountersMap] = useState<Record<string, DailyCounters>>(
+    {},
+  );
+  const [countersLoading, setCountersLoading] = useState(true);
 
   useEffect(() => {
-    if (!zones || zones.length === 0) return
-    let cancelled = false
-    const day = today()
+    if (!zones || zones.length === 0) return;
+    let cancelled = false;
+    const day = today();
 
     const doFetch = () => {
       Promise.all(
@@ -249,30 +245,30 @@ export function ZoneCards() {
             .catch(() => null),
         ),
       ).then((results) => {
-        if (cancelled) return
-        const map: Record<string, DailyCounters> = {}
+        if (cancelled) return;
+        const map: Record<string, DailyCounters> = {};
         for (const r of results) {
-          if (r) map[r[0]] = r[1]
+          if (r) map[r[0]] = r[1];
         }
-        setCountersMap(map)
-        setCountersLoading(false)
-      })
-    }
+        setCountersMap(map);
+        setCountersLoading(false);
+      });
+    };
 
-    doFetch()
-    const id = setInterval(doFetch, 30_000)
+    doFetch();
+    const id = setInterval(doFetch, 30_000);
     return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-  }, [zones])
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [zones]);
 
   // Build a flat map: nodeId -> readings[] from live status
   const allReadings: Record<string, SensorReading[]> = status?.nodes
     ? Object.fromEntries(
         Object.entries(status.nodes).map(([id, n]) => [id, n.readings]),
       )
-    : {}
+    : {};
 
   if (statusLoading || zonesLoading) {
     return (
@@ -291,7 +287,7 @@ export function ZoneCards() {
           </Card>
         ))}
       </div>
-    )
+    );
   }
 
   if (!zones || zones.length === 0) {
@@ -299,7 +295,7 @@ export function ZoneCards() {
       <div className="px-4 lg:px-6">
         <p className="text-sm text-muted-foreground">No zones configured.</p>
       </div>
-    )
+    );
   }
 
   return (
@@ -316,5 +312,5 @@ export function ZoneCards() {
         />
       ))}
     </div>
-  )
+  );
 }

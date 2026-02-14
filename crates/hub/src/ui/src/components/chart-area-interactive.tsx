@@ -1,4 +1,4 @@
-import { useState, useMemo } from "preact/hooks"
+import { useState, useMemo } from "preact/hooks";
 import {
   Area,
   AreaChart,
@@ -6,11 +6,11 @@ import {
   XAxis,
   YAxis,
   ReferenceLine,
-} from "recharts"
+} from "recharts";
 
-import { useReadings, useZones } from "@/hooks/use-api"
-import { ZoneSelector } from "@/components/zone-selector"
-import type { ReadingRow } from "@/types"
+import { useReadings, useZones } from "@/hooks/use-api";
+import { ZoneSelector } from "@/components/zone-selector";
+import type { ReadingRow } from "@/types";
 import {
   Card,
   CardAction,
@@ -18,30 +18,27 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card"
+} from "@/components/ui/card";
 import {
   ChartContainer,
   ChartTooltip,
   type ChartConfig,
-} from "@/components/ui/chart"
+} from "@/components/ui/chart";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select"
-import {
-  ToggleGroup,
-  ToggleGroupItem,
-} from "@/components/ui/toggle-group"
+} from "@/components/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 // ── Time range options ──────────────────────────────────────────
 
 interface TimeRangeOption {
-  label: string
-  value: string
-  limit: number
+  label: string;
+  value: string;
+  limit: number;
 }
 
 const TIME_RANGES: TimeRangeOption[] = [
@@ -49,7 +46,7 @@ const TIME_RANGES: TimeRangeOption[] = [
   { label: "Last 6h", value: "6h", limit: 360 },
   { label: "Last 24h", value: "24h", limit: 1000 },
   { label: "Last 7d", value: "7d", limit: 1000 },
-]
+];
 
 // ── Chart colors per sensor slot ────────────────────────────────
 
@@ -59,66 +56,69 @@ const SENSOR_COLORS = [
   "var(--chart-3)",
   "var(--chart-4)",
   "var(--chart-5)",
-]
+];
 
 // ── Helpers ─────────────────────────────────────────────────────
 
 function formatTime(epoch: number): string {
-  const d = new Date(epoch * 1000)
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+  const d = new Date(epoch * 1000);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function formatTimestamp(epoch: number): string {
-  const d = new Date(epoch * 1000)
+  const d = new Date(epoch * 1000);
   return d.toLocaleString([], {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-  })
+  });
 }
 
 /**
  * Group flat ReadingRow[] into time-bucketed rows with one moisture key per sensor.
  * Each row: { ts, [sensor_id]: moisture, [`${sensor_id}_raw`]: raw, ... }
  */
-function pivotReadings(
-  readings: ReadingRow[],
-): { rows: Record<string, unknown>[]; sensorIds: string[] } {
-  const sensorSet = new Set<string>()
-  const byTs = new Map<number, Record<string, unknown>>()
+function pivotReadings(readings: ReadingRow[]): {
+  rows: Record<string, unknown>[];
+  sensorIds: string[];
+} {
+  const sensorSet = new Set<string>();
+  const byTs = new Map<number, Record<string, unknown>>();
 
   for (const r of readings) {
-    sensorSet.add(r.sensor_id)
-    let row = byTs.get(r.ts)
+    sensorSet.add(r.sensor_id);
+    let row = byTs.get(r.ts);
     if (!row) {
-      row = { ts: r.ts }
-      byTs.set(r.ts, row)
+      row = { ts: r.ts };
+      byTs.set(r.ts, row);
     }
-    row[r.sensor_id] = r.moisture
-    row[`${r.sensor_id}_raw`] = r.raw
+    row[r.sensor_id] = r.moisture;
+    row[`${r.sensor_id}_raw`] = r.raw;
   }
 
-  const sensorIds = Array.from(sensorSet).sort()
+  const sensorIds = Array.from(sensorSet).sort();
   const rows = Array.from(byTs.values()).sort(
     (a, b) => (a.ts as number) - (b.ts as number),
-  )
-  return { rows, sensorIds }
+  );
+  return { rows, sensorIds };
 }
 
 // ── Custom tooltip ──────────────────────────────────────────────
 
 function MoistureTooltipContent({ active, payload, label }: any) {
-  if (!active || !payload?.length) return null
+  if (!active || !payload?.length) return null;
   return (
     <div className="border-border/50 bg-background min-w-[10rem] rounded-lg border px-3 py-2 text-xs shadow-xl">
-      <div className="mb-1.5 font-medium">{formatTimestamp(label as number)}</div>
+      <div className="mb-1.5 font-medium">
+        {formatTimestamp(label as number)}
+      </div>
       <div className="grid gap-1">
         {payload.map((entry: any) => {
-          if (entry.type === "none") return null
-          const sensorId = entry.dataKey as string
-          const moisture = entry.value as number
-          const raw = entry.payload[`${sensorId}_raw`]
+          if (entry.type === "none") return null;
+          const sensorId = entry.dataKey as string;
+          const moisture = entry.value as number;
+          const raw = entry.payload[`${sensorId}_raw`];
           return (
             <div key={sensorId} className="flex items-center gap-2">
               <div
@@ -135,63 +135,64 @@ function MoistureTooltipContent({ active, payload, label }: any) {
                 </span>
               )}
             </div>
-          )
+          );
         })}
       </div>
     </div>
-  )
+  );
 }
 
 // ── Main component ──────────────────────────────────────────────
 
 interface MoistureChartProps {
-  zoneId?: string
+  zoneId?: string;
 }
 
 export function MoistureChart({ zoneId: zoneIdProp }: MoistureChartProps = {}) {
-  const [timeRange, setTimeRange] = useState("6h")
-  const [internalZoneId, setInternalZoneId] = useState("")
+  const [timeRange, setTimeRange] = useState("6h");
+  const [internalZoneId, setInternalZoneId] = useState("");
 
-  const zoneId = zoneIdProp ?? internalZoneId
-  const manageZone = zoneIdProp === undefined
+  const zoneId = zoneIdProp ?? internalZoneId;
+  const manageZone = zoneIdProp === undefined;
 
   // Derive limit from time range
-  const limit = TIME_RANGES.find((r) => r.value === timeRange)?.limit ?? 360
+  const limit = TIME_RANGES.find((r) => r.value === timeRange)?.limit ?? 360;
 
   // Fetch data
   const { data: readings, loading } = useReadings({
     zone_id: zoneId || undefined,
     limit,
-  })
-  const { data: zones } = useZones()
+  });
+  const { data: zones } = useZones();
 
   // Find zone config for reference lines
   const activeZone = useMemo(
     () => zones?.find((z) => z.zone_id === zoneId) ?? null,
     [zones, zoneId],
-  )
+  );
 
   // Pivot readings into chart rows
   const { rows, sensorIds } = useMemo(
     () => pivotReadings(readings ?? []),
     [readings],
-  )
+  );
 
   // Build chart config dynamically
   const chartConfig = useMemo(() => {
-    const cfg: ChartConfig = {}
+    const cfg: ChartConfig = {};
     sensorIds.forEach((id, i) => {
       cfg[id] = {
         label: id,
         color: SENSOR_COLORS[i % SENSOR_COLORS.length],
-      }
-    })
-    return cfg
-  }, [sensorIds])
+      };
+    });
+    return cfg;
+  }, [sensorIds]);
 
   // Description text
-  const rangeLabel = TIME_RANGES.find((r) => r.value === timeRange)?.label ?? ""
-  const zoneLabel = activeZone?.name ?? "All Zones"
+  const rangeLabel =
+    TIME_RANGES.find((r) => r.value === timeRange)?.label ?? "";
+  const zoneLabel = activeZone?.name ?? "All Zones";
 
   return (
     <Card className="@container/card">
@@ -233,7 +234,11 @@ export function MoistureChart({ zoneId: zoneIdProp }: MoistureChartProps = {}) {
               </SelectTrigger>
               <SelectContent className="rounded-xl">
                 {TIME_RANGES.map((r) => (
-                  <SelectItem key={r.value} value={r.value} className="rounded-lg">
+                  <SelectItem
+                    key={r.value}
+                    value={r.value}
+                    className="rounded-lg"
+                  >
                     {r.label}
                   </SelectItem>
                 ))}
@@ -345,5 +350,5 @@ export function MoistureChart({ zoneId: zoneIdProp }: MoistureChartProps = {}) {
         )}
       </CardContent>
     </Card>
-  )
+  );
 }

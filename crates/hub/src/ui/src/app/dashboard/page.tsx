@@ -1,16 +1,16 @@
-import { SectionCards } from "@/components/section-cards"
-import { ZoneCards } from "@/components/zone-cards"
-import { MoistureChart } from "@/components/chart-area-interactive"
-import { WateringEventsTable } from "@/components/watering-events-table"
-import { EventLog } from "@/components/event-log"
-import { AppSidebar } from "@/components/app-sidebar"
-import { SiteHeader } from "@/components/site-header"
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { SectionCards } from "@/components/section-cards";
+import { ZoneCards } from "@/components/zone-cards";
+import { MoistureChart } from "@/components/chart-area-interactive";
+import { WateringEventsTable } from "@/components/watering-events-table";
+import { EventLog } from "@/components/event-log";
+import { AppSidebar } from "@/components/app-sidebar";
+import { SiteHeader } from "@/components/site-header";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface DashboardPageProps {
-  currentPage: string
-  onNavigate: (page: string) => void
+  currentPage: string;
+  onNavigate: (page: string) => void;
 }
 
 function EventsTabs() {
@@ -27,7 +27,7 @@ function EventsTabs() {
         <EventLog />
       </TabsContent>
     </Tabs>
-  )
+  );
 }
 
 export default function Page({ currentPage, onNavigate }: DashboardPageProps) {
@@ -40,7 +40,11 @@ export default function Page({ currentPage, onNavigate }: DashboardPageProps) {
         } as any
       }
     >
-      <AppSidebar currentPage={currentPage} onNavigate={onNavigate} variant="inset" />
+      <AppSidebar
+        currentPage={currentPage}
+        onNavigate={onNavigate}
+        variant="inset"
+      />
       <SidebarInset>
         <SiteHeader currentPage={currentPage} />
         <div className="flex flex-1 flex-col">
@@ -74,5 +78,5 @@ export default function Page({ currentPage, onNavigate }: DashboardPageProps) {
         </div>
       </SidebarInset>
     </SidebarProvider>
-  )
+  );
 }

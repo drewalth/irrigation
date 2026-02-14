@@ -1,19 +1,19 @@
-import { useZones } from "@/hooks/use-api"
+import { useZones } from "@/hooks/use-api";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select"
+} from "@/components/ui/select";
 
 interface ZoneSelectorProps {
-  value: string
-  onChange: (value: string) => void
+  value: string;
+  onChange: (value: string) => void;
 }
 
 export function ZoneSelector({ value, onChange }: ZoneSelectorProps) {
-  const { data: zones } = useZones()
+  const { data: zones } = useZones();
 
   return (
     <Select value={value} onValueChange={onChange}>
@@ -29,5 +29,5 @@ export function ZoneSelector({ value, onChange }: ZoneSelectorProps) {
         ))}
       </SelectContent>
     </Select>
-  )
+  );
 }
