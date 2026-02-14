@@ -1,0 +1,48 @@
+# Development-only compose stack — mock GPIO, fake sensor data.
+# Usage: docker compose up --build
+
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  hub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: hub
+    environment:
+      MQTT_HOST: mqtt
+      MQTT_PORT: "1883"
+      RELAY_ACTIVE_LOW: "true"
+    depends_on:
+      - mqtt
+
+  node-a:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: node
+    environment:
+      MQTT_HOST: mqtt
+      MQTT_PORT: "1883"
+      NODE_ID: node-a
+      SAMPLE_EVERY_S: "5"
+    depends_on:
+      - mqtt
+
+  node-b:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: node
+    environment:
+      MQTT_HOST: mqtt
+      MQTT_PORT: "1883"
+      NODE_ID: node-b
+      SAMPLE_EVERY_S: "5"
+    depends_on:
+      - mqtt
