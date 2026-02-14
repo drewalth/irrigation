@@ -1,167 +1,20 @@
+mod config;
 mod db;
+mod mqtt;
 mod state;
+mod valve;
 mod web;
 
 use anyhow::Result;
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
-use serde::Deserialize;
 use std::{collections::HashMap, env, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 
 use db::{compute_moisture, Db, SensorConfig};
+use mqtt::{extract_node_id, extract_zone_id, parse_valve_command, ReadingMsg};
 use state::{SensorReading, SystemState};
-
-#[cfg(feature = "gpio")]
-use rppal::gpio::{Gpio, OutputPin};
-
-#[derive(Debug, Deserialize)]
-struct Reading {
-    sensor_id: String,
-    raw: i64,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReadingMsg {
-    ts: i64,
-    readings: Vec<Reading>,
-}
-
-// ---------------------------------------------------------------------------
-// Real GPIO valve board (production — requires rppal + Raspberry Pi hardware)
-// ---------------------------------------------------------------------------
-#[cfg(feature = "gpio")]
-struct ValveBoard {
-    pins: HashMap<String, OutputPin>, // zone_id -> GPIO pin
-    active_low: bool,                 // many relay boards are active-low
-}
-
-#[cfg(feature = "gpio")]
-impl ValveBoard {
-    fn new(zone_to_gpio: &[(String, u8)], active_low: bool) -> Result<Self> {
-        let gpio = Gpio::new()?;
-        let mut pins = HashMap::new();
-
-        for (zone_id, pin_num) in zone_to_gpio {
-            let mut pin = gpio.get(*pin_num)?.into_output();
-
-            // Fail-safe: ensure "OFF" at startup
-            if active_low {
-                pin.set_high(); // active-low relay OFF
-            } else {
-                pin.set_low(); // active-high relay OFF
-            }
-
-            pins.insert(zone_id.clone(), pin);
-        }
-
-        Ok(Self { pins, active_low })
-    }
-
-    fn set(&mut self, zone_id: &str, on: bool) {
-        if let Some(pin) = self.pins.get_mut(zone_id) {
-            if self.active_low {
-                // active-low relay: LOW = ON, HIGH = OFF
-                if on {
-                    pin.set_low()
-                } else {
-                    pin.set_high()
-                }
-            } else {
-                // active-high relay: HIGH = ON, LOW = OFF
-                if on {
-                    pin.set_high()
-                } else {
-                    pin.set_low()
-                }
-            }
-            eprintln!("valve zone={zone_id} set {}", if on { "ON" } else { "OFF" });
-        } else {
-            eprintln!("unknown zone_id '{zone_id}'");
-        }
-    }
-
-    fn all_off(&mut self) {
-        let keys: Vec<String> = self.pins.keys().cloned().collect();
-        for k in keys {
-            self.set(&k, false);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Mock valve board (development — no hardware, logs state to stderr)
-// ---------------------------------------------------------------------------
-#[cfg(not(feature = "gpio"))]
-struct ValveBoard {
-    zones: HashMap<String, bool>, // zone_id -> on/off state
-}
-
-#[cfg(not(feature = "gpio"))]
-impl ValveBoard {
-    fn new(zone_to_gpio: &[(String, u8)], _active_low: bool) -> Result<Self> {
-        let mut zones = HashMap::new();
-        for (zone_id, pin_num) in zone_to_gpio {
-            eprintln!("[mock-gpio] registered zone={zone_id} (gpio {pin_num} — not wired)");
-            zones.insert(zone_id.clone(), false);
-        }
-        eprintln!("[mock-gpio] valve board initialised (no hardware)");
-        Ok(Self { zones })
-    }
-
-    fn set(&mut self, zone_id: &str, on: bool) {
-        if let Some(state) = self.zones.get_mut(zone_id) {
-            *state = on;
-            eprintln!(
-                "[mock-gpio] valve zone={zone_id} set {}",
-                if on { "ON" } else { "OFF" }
-            );
-        } else {
-            eprintln!("[mock-gpio] unknown zone_id '{zone_id}'");
-        }
-    }
-
-    fn all_off(&mut self) {
-        let keys: Vec<String> = self.zones.keys().cloned().collect();
-        for k in keys {
-            self.set(&k, false);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers (extracted for testability)
-// ---------------------------------------------------------------------------
-
-/// Extract node_id from "tele/<node_id>/reading".
-fn extract_node_id(topic: &str) -> Option<&str> {
-    let parts: Vec<&str> = topic.split('/').collect();
-    if parts.len() == 3 && parts[0] == "tele" && parts[2] == "reading" {
-        Some(parts[1])
-    } else {
-        None
-    }
-}
-
-/// Extract zone_id from "valve/<zone_id>/set".
-fn extract_zone_id(topic: &str) -> Option<&str> {
-    let parts: Vec<&str> = topic.split('/').collect();
-    if parts.len() == 3 && parts[0] == "valve" && parts[2] == "set" {
-        Some(parts[1])
-    } else {
-        None
-    }
-}
-
-/// Parse an "ON"/"OFF" payload into a bool (case-insensitive, trims whitespace).
-fn parse_valve_command(payload: &[u8]) -> Result<bool, String> {
-    let s = String::from_utf8_lossy(payload).trim().to_uppercase();
-    match s.as_str() {
-        "ON" => Ok(true),
-        "OFF" => Ok(false),
-        _ => Err(format!("unknown valve command '{s}'")),
-    }
-}
+use valve::ValveBoard;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -178,11 +31,15 @@ async fn main() -> Result<()> {
     let db = Db::connect(&db_url).await?;
     db.migrate().await?;
 
+    // ── Config file (seed zones + sensors) ───────────────────────────
+    let config_path = env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
+    let cfg = config::load(&config_path)?;
+    config::apply(&cfg, &db).await?;
+
     // Load zone config from DB — this is the source of truth.
     let zones = db.load_zones().await?;
     if zones.is_empty() {
-        eprintln!("WARNING: no zones configured in the database. \
-                   Insert zones via the DB or a seed script.");
+        eprintln!("WARNING: no zones configured in the database.");
     }
 
     // Derive zone->GPIO mapping from persisted zone config.
@@ -192,6 +49,7 @@ async fn main() -> Result<()> {
         .collect();
 
     // Build sensor lookup table for calibration during MQTT readings.
+    // Keys are qualified IDs: "node-a/s1", "node-b/s2", etc.
     let sensors = db.load_sensors().await?;
     let sensor_map: HashMap<String, SensorConfig> = sensors
         .into_iter()
@@ -263,23 +121,27 @@ async fn main() -> Result<()> {
                             );
 
                             // Persist each reading to the DB (best-effort).
+                            // Qualify sensor_id with node_id so each node's
+                            // local channel names ("s1", "s2") become unique.
                             for r in &msg.readings {
-                                if let Some(sc) = sensor_map.get(&r.sensor_id) {
+                                let qualified_id =
+                                    format!("{node_id}/{}", r.sensor_id);
+                                if let Some(sc) = sensor_map.get(&qualified_id) {
                                     let moisture =
                                         compute_moisture(r.raw, sc.raw_dry, sc.raw_wet);
                                     if let Err(e) = db
-                                        .insert_reading(msg.ts, &r.sensor_id, r.raw, moisture)
+                                        .insert_reading(
+                                            msg.ts, &qualified_id, r.raw, moisture,
+                                        )
                                         .await
                                     {
                                         eprintln!(
-                                            "db: insert_reading failed sensor={}: {e}",
-                                            r.sensor_id
+                                            "db: insert_reading failed sensor={qualified_id}: {e}",
                                         );
                                     }
                                 } else {
                                     eprintln!(
-                                        "unknown sensor_id '{}' — skipping DB write",
-                                        r.sensor_id
+                                        "unknown sensor '{qualified_id}' — skipping DB write",
                                     );
                                 }
                             }
@@ -347,205 +209,5 @@ async fn main() -> Result<()> {
                 sleep(Duration::from_secs(2)).await;
             }
         }
-    }
-}
-
-// ===========================================================================
-// Tests
-// ===========================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // -- extract_node_id ----------------------------------------------------
-
-    #[test]
-    fn extract_node_id_valid_topic() {
-        assert_eq!(extract_node_id("tele/node-a/reading"), Some("node-a"));
-    }
-
-    #[test]
-    fn extract_node_id_different_node() {
-        assert_eq!(
-            extract_node_id("tele/greenhouse-1/reading"),
-            Some("greenhouse-1")
-        );
-    }
-
-    #[test]
-    fn extract_node_id_wrong_prefix() {
-        assert_eq!(extract_node_id("foo/node-a/reading"), None);
-    }
-
-    #[test]
-    fn extract_node_id_wrong_suffix() {
-        assert_eq!(extract_node_id("tele/node-a/status"), None);
-    }
-
-    #[test]
-    fn extract_node_id_too_few_segments() {
-        assert_eq!(extract_node_id("tele/reading"), None);
-    }
-
-    #[test]
-    fn extract_node_id_too_many_segments() {
-        assert_eq!(extract_node_id("tele/node-a/sub/reading"), None);
-    }
-
-    #[test]
-    fn extract_node_id_empty_string() {
-        assert_eq!(extract_node_id(""), None);
-    }
-
-    // -- extract_zone_id ----------------------------------------------------
-
-    #[test]
-    fn extract_zone_id_valid_topic() {
-        assert_eq!(extract_zone_id("valve/zone1/set"), Some("zone1"));
-    }
-
-    #[test]
-    fn extract_zone_id_wrong_prefix() {
-        assert_eq!(extract_zone_id("pump/zone1/set"), None);
-    }
-
-    #[test]
-    fn extract_zone_id_wrong_suffix() {
-        assert_eq!(extract_zone_id("valve/zone1/get"), None);
-    }
-
-    #[test]
-    fn extract_zone_id_too_few_segments() {
-        assert_eq!(extract_zone_id("valve/set"), None);
-    }
-
-    #[test]
-    fn extract_zone_id_empty_string() {
-        assert_eq!(extract_zone_id(""), None);
-    }
-
-    // -- parse_valve_command ------------------------------------------------
-
-    #[test]
-    fn parse_valve_command_on_uppercase() {
-        assert_eq!(parse_valve_command(b"ON"), Ok(true));
-    }
-
-    #[test]
-    fn parse_valve_command_off_uppercase() {
-        assert_eq!(parse_valve_command(b"OFF"), Ok(false));
-    }
-
-    #[test]
-    fn parse_valve_command_on_lowercase() {
-        assert_eq!(parse_valve_command(b"on"), Ok(true));
-    }
-
-    #[test]
-    fn parse_valve_command_off_mixed_case() {
-        assert_eq!(parse_valve_command(b"oFf"), Ok(false));
-    }
-
-    #[test]
-    fn parse_valve_command_with_whitespace() {
-        assert_eq!(parse_valve_command(b"  ON  "), Ok(true));
-        assert_eq!(parse_valve_command(b"\tOFF\n"), Ok(false));
-    }
-
-    #[test]
-    fn parse_valve_command_garbage() {
-        assert!(parse_valve_command(b"TOGGLE").is_err());
-    }
-
-    #[test]
-    fn parse_valve_command_empty() {
-        assert!(parse_valve_command(b"").is_err());
-    }
-
-    // -- ValveBoard (mock) --------------------------------------------------
-
-    #[test]
-    fn valve_board_new_registers_zones() {
-        let zones = vec![("z1".to_string(), 17), ("z2".to_string(), 27)];
-        let board = ValveBoard::new(&zones, true).unwrap();
-        assert_eq!(board.zones.len(), 2);
-    }
-
-    #[test]
-    fn valve_board_new_all_off() {
-        let zones = vec![("z1".to_string(), 17)];
-        let board = ValveBoard::new(&zones, true).unwrap();
-        assert!(!board.zones["z1"]);
-    }
-
-    #[test]
-    fn valve_board_set_on() {
-        let zones = vec![("z1".to_string(), 17)];
-        let mut board = ValveBoard::new(&zones, true).unwrap();
-        board.set("z1", true);
-        assert!(board.zones["z1"]);
-    }
-
-    #[test]
-    fn valve_board_set_off() {
-        let zones = vec![("z1".to_string(), 17)];
-        let mut board = ValveBoard::new(&zones, true).unwrap();
-        board.set("z1", true);
-        board.set("z1", false);
-        assert!(!board.zones["z1"]);
-    }
-
-    #[test]
-    fn valve_board_all_off_resets_everything() {
-        let zones = vec![("z1".to_string(), 17), ("z2".to_string(), 27)];
-        let mut board = ValveBoard::new(&zones, true).unwrap();
-        board.set("z1", true);
-        board.set("z2", true);
-        board.all_off();
-        assert!(!board.zones["z1"]);
-        assert!(!board.zones["z2"]);
-    }
-
-    #[test]
-    fn valve_board_set_unknown_zone_does_not_panic() {
-        let zones = vec![("z1".to_string(), 17)];
-        let mut board = ValveBoard::new(&zones, true).unwrap();
-        board.set("nonexistent", true); // should not panic
-        assert_eq!(board.zones.len(), 1); // no new entry created
-    }
-
-    // -- ReadingMsg deserialization ------------------------------------------
-
-    #[test]
-    fn reading_msg_deserialize_valid() {
-        let json = r#"{"ts":1700000000,"readings":[{"sensor_id":"s1","raw":20000}]}"#;
-        let msg: ReadingMsg = serde_json::from_str(json).unwrap();
-        assert_eq!(msg.ts, 1700000000);
-        assert_eq!(msg.readings.len(), 1);
-        assert_eq!(msg.readings[0].sensor_id, "s1");
-        assert_eq!(msg.readings[0].raw, 20000);
-    }
-
-    #[test]
-    fn reading_msg_deserialize_multiple_readings() {
-        let json = r#"{"ts":1,"readings":[{"sensor_id":"a","raw":1},{"sensor_id":"b","raw":2}]}"#;
-        let msg: ReadingMsg = serde_json::from_str(json).unwrap();
-        assert_eq!(msg.readings.len(), 2);
-    }
-
-    #[test]
-    fn reading_msg_deserialize_missing_field_fails() {
-        // Missing "readings" field
-        let json = r#"{"ts":1}"#;
-        assert!(serde_json::from_str::<ReadingMsg>(json).is_err());
-    }
-
-    #[test]
-    fn reading_msg_deserialize_extra_fields_ignored() {
-        let json = r#"{"ts":1,"readings":[],"extra":"ignored"}"#;
-        let msg: ReadingMsg = serde_json::from_str(json).unwrap();
-        assert_eq!(msg.ts, 1);
-        assert!(msg.readings.is_empty());
     }
 }

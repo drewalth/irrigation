@@ -18,6 +18,7 @@ axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 time = { version = "0.3", features = ["macros"] }
+toml = "0.8"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

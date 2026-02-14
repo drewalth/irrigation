@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::{Pool, Sqlite};
+use std::str::FromStr;
 use time::OffsetDateTime;
 
 #[derive(Clone)]
@@ -60,9 +62,14 @@ impl Db {
     /// - "sqlite:/home/pi/irrigation/irrigation.db"
     /// - "sqlite::memory:" (tests)
     pub async fn connect(db_url: &str) -> Result<Self> {
+        let options = SqliteConnectOptions::from_str(db_url)
+            .with_context(|| format!("invalid sqlite connection string: {db_url}"))?
+            .journal_mode(SqliteJournalMode::Wal)
+            .foreign_keys(true);
+
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(db_url)
+            .connect_with(options)
             .await
             .with_context(|| format!("failed to connect to sqlite db: {db_url}"))?;
 
