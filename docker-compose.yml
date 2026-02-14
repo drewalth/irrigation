@@ -21,6 +21,9 @@ services:
       MQTT_PORT: "1883"
       RELAY_ACTIVE_LOW: "true"
       WEB_PORT: "8080"
+      DB_URL: "sqlite:/data/irrigation.db?mode=rwc"
+    volumes:
+      - hub-data:/data
     depends_on:
       - mqtt
 
@@ -49,3 +52,6 @@ services:
       SAMPLE_EVERY_S: "5"
     depends_on:
       - mqtt
+
+volumes:
+  hub-data:

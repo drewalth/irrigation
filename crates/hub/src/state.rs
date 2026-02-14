@@ -35,7 +35,7 @@ pub struct NodeState {
 #[derive(Clone, Serialize)]
 pub struct SensorReading {
     pub sensor_id: String,
-    pub raw: i32,
+    pub raw: i64,
 }
 
 #[derive(Clone, Serialize)]

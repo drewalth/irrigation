@@ -1,3 +1,4 @@
+mod db;
 mod state;
 mod web;
 
@@ -8,6 +9,7 @@ use std::{collections::HashMap, env, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 
+use db::{compute_moisture, Db, SensorConfig};
 use state::{SensorReading, SystemState};
 
 #[cfg(feature = "gpio")]
@@ -16,12 +18,11 @@ use rppal::gpio::{Gpio, OutputPin};
 #[derive(Debug, Deserialize)]
 struct Reading {
     sensor_id: String,
-    raw: i32,
+    raw: i64,
 }
 
 #[derive(Debug, Deserialize)]
 struct ReadingMsg {
-    #[allow(dead_code)]
     ts: i64,
     readings: Vec<Reading>,
 }
@@ -164,17 +165,46 @@ fn parse_valve_command(payload: &[u8]) -> Result<bool, String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Env config
+    // ── Env config ──────────────────────────────────────────────────
     let broker = env::var("MQTT_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port: u16 = env::var("MQTT_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1883);
+    let db_url = env::var("DB_URL")
+        .unwrap_or_else(|_| "sqlite:irrigation.db?mode=rwc".to_string());
 
-    // Define your zone->GPIO mapping here (BCM numbering)
-    // Example: zone1 on GPIO17, zone2 on GPIO27
-    let zone_to_gpio = vec![("zone1".to_string(), 17), ("zone2".to_string(), 27)];
+    // ── Database ────────────────────────────────────────────────────
+    let db = Db::connect(&db_url).await?;
+    db.migrate().await?;
 
+    // Load zone config from DB — this is the source of truth.
+    let zones = db.load_zones().await?;
+    if zones.is_empty() {
+        eprintln!("WARNING: no zones configured in the database. \
+                   Insert zones via the DB or a seed script.");
+    }
+
+    // Derive zone->GPIO mapping from persisted zone config.
+    let zone_to_gpio: Vec<(String, u8)> = zones
+        .iter()
+        .map(|z| (z.zone_id.clone(), z.valve_gpio_pin as u8))
+        .collect();
+
+    // Build sensor lookup table for calibration during MQTT readings.
+    let sensors = db.load_sensors().await?;
+    let sensor_map: HashMap<String, SensorConfig> = sensors
+        .into_iter()
+        .map(|s| (s.sensor_id.clone(), s))
+        .collect();
+
+    eprintln!(
+        "db ready — {} zone(s), {} sensor(s)",
+        zones.len(),
+        sensor_map.len()
+    );
+
+    // ── Valve board ─────────────────────────────────────────────────
     // Many common relay boards are active-low. If yours is active-high, set false.
     let active_low = env::var("RELAY_ACTIVE_LOW")
         .ok()
@@ -184,27 +214,27 @@ async fn main() -> Result<()> {
     let mut valves = ValveBoard::new(&zone_to_gpio, active_low)?;
     valves.all_off();
 
-    // Shared state for the web UI
+    // ── Shared state (ephemeral, for the web UI) ────────────────────
     let shared = Arc::new(RwLock::new(SystemState::new(&zone_to_gpio)));
     {
         let mut st = shared.write().await;
         st.record_system("hub started".to_string());
     }
 
-    // Spawn the web server
+    // ── Web server ──────────────────────────────────────────────────
     let web_state = Arc::clone(&shared);
+    let web_db = db.clone();
     tokio::spawn(async move {
-        web::serve(web_state).await;
+        web::serve(web_state, web_db).await;
     });
 
-    // MQTT setup
+    // ── MQTT ────────────────────────────────────────────────────────
     let client_id = "irrigation-hub";
     let mut mqttoptions = MqttOptions::new(client_id, broker, port);
     mqttoptions.set_keep_alive(Duration::from_secs(30));
 
     let (client, mut eventloop) = AsyncClient::new(mqttoptions, 20);
 
-    // Subscribe to telemetry and valve commands
     client.subscribe("tele/+/reading", QoS::AtLeastOnce).await?;
     client.subscribe("valve/+/set", QoS::AtLeastOnce).await?;
     eprintln!("hub subscribed to tele/+/reading and valve/+/set");
@@ -232,6 +262,28 @@ async fn main() -> Result<()> {
                                 msg.ts, msg.readings
                             );
 
+                            // Persist each reading to the DB (best-effort).
+                            for r in &msg.readings {
+                                if let Some(sc) = sensor_map.get(&r.sensor_id) {
+                                    let moisture =
+                                        compute_moisture(r.raw, sc.raw_dry, sc.raw_wet);
+                                    if let Err(e) = db
+                                        .insert_reading(msg.ts, &r.sensor_id, r.raw, moisture)
+                                        .await
+                                    {
+                                        eprintln!(
+                                            "db: insert_reading failed sensor={}: {e}",
+                                            r.sensor_id
+                                        );
+                                    }
+                                } else {
+                                    eprintln!(
+                                        "unknown sensor_id '{}' — skipping DB write",
+                                        r.sensor_id
+                                    );
+                                }
+                            }
+
                             let mut st = shared.write().await;
                             st.record_reading(node_id, readings);
                         }
@@ -245,6 +297,17 @@ async fn main() -> Result<()> {
                     match parse_valve_command(&payload) {
                         Ok(on) => {
                             valves.set(zone_id, on);
+
+                            // Track daily pulse count when valve turns ON.
+                            if on {
+                                let today = Db::today_yyyy_mm_dd();
+                                if let Err(e) = db.add_pulse(&today, zone_id, 1).await {
+                                    eprintln!("db: add_pulse failed zone={zone_id}: {e}");
+                                }
+                            }
+                            // TODO: track valve-open duration for add_open_seconds
+                            // and insert_watering_event (requires start-time bookkeeping).
+
                             let mut st = shared.write().await;
                             st.record_valve(zone_id, on);
                         }

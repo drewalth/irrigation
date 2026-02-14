@@ -16,6 +16,8 @@ rppal = { version = "0.17", optional = true }
 anyhow = "1.0"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
+sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+time = { version = "0.3", features = ["macros"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
