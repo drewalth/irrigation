@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, QueryBuilder, Sqlite};
 use std::str::FromStr;
 use time::OffsetDateTime;
 
@@ -43,6 +43,23 @@ pub struct DailyCounters {
     pub zone_id: String,
     pub open_sec: i64,
     pub pulses: i64,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ReadingRow {
+    pub ts: i64,
+    pub sensor_id: String,
+    pub raw: i64,
+    pub moisture: f64,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct WateringEventRow {
+    pub ts_start: i64,
+    pub ts_end: i64,
+    pub zone_id: String,
+    pub reason: String,
+    pub result: String,
 }
 
 /// Convert a raw ADC reading to a 0.0..=1.0 moisture fraction using
@@ -197,6 +214,14 @@ impl Db {
         }))
     }
 
+    pub async fn delete_zone(&self, zone_id: &str) -> Result<bool> {
+        let result = sqlx::query!("DELETE FROM zones WHERE zone_id = ?", zone_id)
+            .execute(&self.pool)
+            .await
+            .context("delete_zone failed")?;
+        Ok(result.rows_affected() > 0)
+    }
+
     // ----------------------------
     // Sensor config
     // ----------------------------
@@ -274,6 +299,36 @@ impl Db {
             .collect())
     }
 
+    pub async fn get_sensor(&self, sensor_id: &str) -> Result<Option<SensorConfig>> {
+        let r = sqlx::query!(
+            r#"
+            SELECT sensor_id as "sensor_id!", node_id, zone_id, raw_dry, raw_wet
+            FROM sensors
+            WHERE sensor_id = ?
+            "#,
+            sensor_id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .context("get_sensor failed")?;
+
+        Ok(r.map(|r| SensorConfig {
+            sensor_id: r.sensor_id,
+            node_id: r.node_id,
+            zone_id: r.zone_id,
+            raw_dry: r.raw_dry,
+            raw_wet: r.raw_wet,
+        }))
+    }
+
+    pub async fn delete_sensor(&self, sensor_id: &str) -> Result<bool> {
+        let result = sqlx::query!("DELETE FROM sensors WHERE sensor_id = ?", sensor_id)
+            .execute(&self.pool)
+            .await
+            .context("delete_sensor failed")?;
+        Ok(result.rows_affected() > 0)
+    }
+
     // ----------------------------
     // Readings + aggregation helpers
     // ----------------------------
@@ -341,6 +396,47 @@ impl Db {
         Ok(row.avg_m.map(|v| v as f32))
     }
 
+    pub async fn list_readings(
+        &self,
+        sensor_id: Option<&str>,
+        zone_id: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<ReadingRow>> {
+        let mut qb = QueryBuilder::<Sqlite>::new(
+            "SELECT r.ts AS ts, r.sensor_id AS sensor_id, r.raw AS raw, r.moisture AS moisture FROM readings r",
+        );
+
+        if zone_id.is_some() {
+            qb.push(" JOIN sensors s ON s.sensor_id = r.sensor_id");
+        }
+
+        let mut has_where = false;
+        if let Some(sid) = sensor_id {
+            qb.push(" WHERE r.sensor_id = ");
+            qb.push_bind(sid.to_string());
+            has_where = true;
+        }
+        if let Some(zid) = zone_id {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("s.zone_id = ");
+            qb.push_bind(zid.to_string());
+        }
+
+        qb.push(" ORDER BY r.ts DESC LIMIT ");
+        qb.push_bind(limit);
+        qb.push(" OFFSET ");
+        qb.push_bind(offset);
+
+        let rows = qb
+            .build_query_as::<ReadingRow>()
+            .fetch_all(&self.pool)
+            .await
+            .context("list_readings failed")?;
+
+        Ok(rows)
+    }
+
     // ----------------------------
     // Watering events
     // ----------------------------
@@ -368,6 +464,35 @@ impl Db {
         .await
         .context("insert_watering_event failed")?;
         Ok(())
+    }
+
+    pub async fn list_watering_events(
+        &self,
+        zone_id: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<WateringEventRow>> {
+        let mut qb = QueryBuilder::<Sqlite>::new(
+            "SELECT ts_start, ts_end, zone_id, reason, result FROM watering_events",
+        );
+
+        if let Some(zid) = zone_id {
+            qb.push(" WHERE zone_id = ");
+            qb.push_bind(zid.to_string());
+        }
+
+        qb.push(" ORDER BY ts_start DESC LIMIT ");
+        qb.push_bind(limit);
+        qb.push(" OFFSET ");
+        qb.push_bind(offset);
+
+        let rows = qb
+            .build_query_as::<WateringEventRow>()
+            .fetch_all(&self.pool)
+            .await
+            .context("list_watering_events failed")?;
+
+        Ok(rows)
     }
 
     // ----------------------------
