@@ -1,5 +1,7 @@
 # Irrigation — DIY Distributed IoT Plant Watering System
 
+![Irrigation System](https://www.drewalth.com/_astro/irrigation.02sYVLOS_tTYGC.webp)
+
 Another DIY irrigation system... but this one is different.
 
 A low-cost, distributed, Rust-powered home irrigation system. Soil moisture telemetry, gravity-fed watering, and safe, state-driven control logic — all running locally on Raspberry Pi hardware.
