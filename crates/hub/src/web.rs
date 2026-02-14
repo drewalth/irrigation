@@ -1,3 +1,5 @@
+//! Axum REST API and embedded single-page web dashboard.
+
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Json};
@@ -322,7 +324,6 @@ async fn api_upsert_sensor(
 ) -> Result<Json<SensorConfig>, ApiError> {
     validate_sensor(&payload)?;
 
-    // Verify the referenced zone exists.
     let zone = state
         .db
         .get_zone(&payload.zone_id)

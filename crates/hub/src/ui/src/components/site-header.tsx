@@ -36,25 +36,6 @@ export function SiteHeader({ currentPage }: SiteHeaderProps) {
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
-
-        {/* <div className="ml-auto flex items-center gap-2">
-          {status && (
-            <Badge variant="outline" className="text-xs">
-              {formatUptime(uptimeSecs)}
-            </Badge>
-          )}
-          <Badge
-            variant={mqttConnected ? "default" : "destructive"}
-            className="text-xs"
-          >
-            <span
-              className={`inline-block size-1.5 rounded-full ${
-                mqttConnected ? "bg-green-300" : "bg-red-300"
-              }`}
-            />
-            {mqttConnected ? "Connected" : "Disconnected"}
-          </Badge>
-        </div> */}
       </div>
     </header>
   );

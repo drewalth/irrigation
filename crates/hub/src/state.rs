@@ -1,3 +1,6 @@
+//! In-memory system state for the live web dashboard: node telemetry, zone
+//! valve status, and a capped event ring buffer.
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};

@@ -1,3 +1,5 @@
+//! TOML config file loading and database seeding for zones and sensors.
+
 use anyhow::{Context, Result};
 use serde::Deserialize;
 

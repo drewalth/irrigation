@@ -1,3 +1,6 @@
+//! Hub entry point: reads env/config, connects to MQTT and SQLite, wires up
+//! the valve board, web server, and event loop.
+
 mod config;
 mod db;
 mod mqtt;
@@ -198,7 +201,6 @@ async fn main() -> Result<()> {
             Ok(_) => {}
             Err(e) => {
                 eprintln!("mqtt error: {e}. reconnecting...");
-                // Best-effort fail-safe: turn everything off on comms error
                 valves.all_off();
 
                 let mut st = shared.write().await;

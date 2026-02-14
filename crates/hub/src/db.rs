@@ -1,3 +1,6 @@
+//! SQLite persistence layer (via sqlx): zones, sensors, readings, watering
+//! events, and daily safety counters.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};

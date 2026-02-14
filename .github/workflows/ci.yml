@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  DATABASE_URL: sqlite:crates/hub/irrigation.db?mode=rwc
 
 jobs:
   check:
@@ -15,6 +16,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: crates/hub/src/ui/package-lock.json
+
+      - name: Build UI
+        working-directory: crates/hub/src/ui
+        run: npm ci && npm run build
+
+      - name: Create sqlx compile-time DB
+        run: sqlite3 crates/hub/irrigation.db < crates/hub/migrations/0001_init.sql
 
       - uses: dtolnay/rust-toolchain@stable
         with:

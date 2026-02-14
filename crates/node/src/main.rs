@@ -1,3 +1,6 @@
+//! Sensor node: periodically publishes soil moisture readings over MQTT.
+//! Currently uses fake data; real ADS1115 integration is on the roadmap.
+
 use rand::Rng;
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use serde::Serialize;

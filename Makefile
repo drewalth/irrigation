@@ -2,6 +2,8 @@
 # Rust workspace: hub (Pi 5) + node (Pi Zero W)
 # ──────────────────────────────────────────────────────────────────
 
+.DEFAULT_GOAL := setup
+
 # Cross-compilation targets
 TARGET_HUB   := aarch64-unknown-linux-gnu
 TARGET_NODE  := arm-unknown-linux-gnueabihf

@@ -1,3 +1,5 @@
+//! MQTT topic parsing, payload deserialization, and message types.
+
 use serde::Deserialize;
 
 // ---------------------------------------------------------------------------

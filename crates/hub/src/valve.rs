@@ -1,3 +1,6 @@
+//! Valve control via GPIO. The `gpio` feature gates the real rppal driver;
+//! without it, a mock implementation logs state changes to stderr.
+
 use anyhow::Result;
 use std::collections::HashMap;
 
