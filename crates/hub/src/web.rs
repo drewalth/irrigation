@@ -11,7 +11,8 @@ use tokio::net::TcpListener;
 use crate::db::{Db, SensorConfig, ZoneConfig};
 use crate::state::SharedState;
 
-const INDEX_HTML: &str = include_str!("ui/index.html");
+// this is built by the ui/package.json build script into the dist/index.html file
+const INDEX_HTML: &str = include_str!("ui/dist/index.html");
 
 // ---------------------------------------------------------------------------
 // Composite app state shared across all handlers
