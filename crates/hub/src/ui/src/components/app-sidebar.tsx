@@ -20,6 +20,8 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { Badge } from "@/components/ui/badge";
+import { useToast } from "@/hooks/use-toast";
+import { useEffect } from "preact/hooks";
 
 const navItems = [
   { id: "overview", label: "Overview", icon: IconDashboard },
@@ -80,6 +82,16 @@ const Footer = () => {
   const { data: status } = useStatus();
   const mqttConnected = status?.mqtt_connected ?? false;
   const uptimeSecs = status?.uptime_secs ?? 0;
+  const toast = useToast();
+
+  useEffect(() => {
+    if (mqttConnected) {
+      toast.success("MQTT connected");
+    } else {
+      toast.error("MQTT disconnected");
+    }
+  }, [mqttConnected]);
+
   return (
     <SidebarFooter>
       <SidebarMenu>
