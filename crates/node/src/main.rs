@@ -1,5 +1,15 @@
 //! Sensor node: periodically publishes soil moisture readings over MQTT.
-//! Currently uses fake data; real ADS1115 integration is on the roadmap.
+//!
+//! With the `sim` feature (default) the node generates realistic fake sensor
+//! data for local development.  Without it a real ADS1115 backend is expected
+//! (future `adc` feature).
+
+#[cfg(feature = "sim")]
+mod sim;
+
+// Fail at compile time if no sensor backend is enabled.
+#[cfg(not(any(feature = "sim", feature = "adc")))]
+compile_error!("Enable either `sim` (fake data) or `adc` (real ADS1115) feature");
 
 use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS};
 use serde::Serialize;
@@ -34,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // Env config
+    // ── Env config ───────────────────────────────────────────────────
     let broker = env::var("MQTT_HOST").unwrap_or_else(|_| "192.168.1.10".to_string());
     let port: u16 = env::var("MQTT_PORT")
         .ok()
@@ -47,8 +57,56 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(300);
 
-    let client_id = format!("irrigation-node-{}", node_id);
+    // ── Simulation config (only when `sim` feature is enabled) ───────
+    #[cfg(feature = "sim")]
+    let scenario = {
+        let s = env::var("SIM_SCENARIO").unwrap_or_else(|_| "drying".to_string());
+        sim::Scenario::from_str_lossy(&s)
+    };
+    #[cfg(feature = "sim")]
+    let sim_raw_dry: f64 = env::var("SIM_RAW_DRY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(26000.0);
+    #[cfg(feature = "sim")]
+    let sim_raw_wet: f64 = env::var("SIM_RAW_WET")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(12000.0);
+    #[cfg(feature = "sim")]
+    let sim_diurnal_period_s: f64 = env::var("SIM_DIURNAL_PERIOD_S")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(600.0);
+    #[cfg(feature = "sim")]
+    let sim_zone_id: Option<String> = env::var("SIM_ZONE_ID").ok();
 
+    #[cfg(feature = "sim")]
+    let mut sim = sim::SoilMoistureSim::new(
+        scenario,
+        2, // two sensor channels: s1, s2
+        sim_raw_dry,
+        sim_raw_wet,
+        sim_diurnal_period_s,
+    );
+    #[cfg(feature = "sim")]
+    tracing::info!(
+        scenario = %scenario,
+        raw_dry = sim_raw_dry,
+        raw_wet = sim_raw_wet,
+        diurnal_period_s = sim_diurnal_period_s,
+        zone_id = ?sim_zone_id,
+        "simulation initialised"
+    );
+
+    // Watering flag shared between MQTT event loop and sampling loop.
+    // The event loop sets it; the sampling loop reads it.  AtomicBool is
+    // sufficient — no mutex needed.
+    #[cfg(feature = "sim")]
+    let watering_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // ── MQTT setup ───────────────────────────────────────────────────
+    let client_id = format!("irrigation-node-{}", node_id);
     let status_topic = format!("status/node/{}", node_id);
 
     let mut mqttoptions = MqttOptions::new(client_id, broker, port);
@@ -74,14 +132,25 @@ async fn main() -> anyhow::Result<()> {
 
     let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
 
-    // Run the eventloop and announce online status on every (re)connect.
+    // ── MQTT event loop task ─────────────────────────────────────────
     let status_client = client.clone();
     let el_status_topic = status_topic.clone();
+
+    // Build the valve subscription topic if SIM_ZONE_ID is set.
+    #[cfg(feature = "sim")]
+    let valve_topic: Option<String> = sim_zone_id.as_ref().map(|z| format!("valve/{z}/set"));
+
+    #[cfg(feature = "sim")]
+    let el_valve_topic = valve_topic.clone();
+    #[cfg(feature = "sim")]
+    let el_watering_flag = watering_flag.clone();
+
     tokio::spawn(async move {
         loop {
             match eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     tracing::info!("node connected to mqtt");
+
                     // Announce online (retained) — mirrors the LWT "offline".
                     if let Err(e) = status_client
                         .publish(&el_status_topic, QoS::AtLeastOnce, true, b"online".to_vec())
@@ -89,7 +158,47 @@ async fn main() -> anyhow::Result<()> {
                     {
                         tracing::error!("failed to publish online status: {e}");
                     }
+
+                    // Subscribe to valve commands for watering response.
+                    #[cfg(feature = "sim")]
+                    if let Some(ref vt) = el_valve_topic {
+                        if let Err(e) =
+                            status_client.subscribe(vt, QoS::AtLeastOnce).await
+                        {
+                            tracing::error!("failed to subscribe to {vt}: {e}");
+                        } else {
+                            tracing::info!(topic = %vt, "subscribed to valve commands");
+                        }
+                    }
                 }
+
+                // Handle incoming valve commands (sim only).
+                #[cfg(feature = "sim")]
+                Ok(Event::Incoming(Packet::Publish(pub_msg))) => {
+                    if let Some(ref vt) = el_valve_topic {
+                        if pub_msg.topic == *vt {
+                            let payload = std::str::from_utf8(&pub_msg.payload)
+                                .unwrap_or("")
+                                .trim();
+                            match payload {
+                                "open" => {
+                                    tracing::info!("sim: valve open — wetting sensors");
+                                    el_watering_flag
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                "close" => {
+                                    tracing::info!("sim: valve closed — resuming drying");
+                                    el_watering_flag
+                                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                other => {
+                                    tracing::debug!(payload = other, "ignoring unknown valve payload");
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Ok(_) => {}
                 Err(e) => {
                     tracing::error!("mqtt error: {e} — retrying");
@@ -99,37 +208,49 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // ── Sampling loop ────────────────────────────────────────────────
     let topic = format!("tele/{}/reading", node_id);
     tracing::info!(topic = %topic, "publishing sensor readings");
 
     loop {
-        // Fake sensor raw values for now: replace with ADS1115 reads later
-        let r1 = fastrand::i32(17000..26000);
-        let r2 = fastrand::i32(17000..26000);
+        // Produce readings from the active sensor backend.
+        #[cfg(feature = "sim")]
+        let readings: Vec<Reading> = {
+            let watering =
+                watering_flag.load(std::sync::atomic::Ordering::Relaxed);
+            sim.set_watering(watering);
 
-        let msg = ReadingMsg {
-            ts: now_unix(),
-            readings: vec![
-                Reading {
-                    sensor_id: "s1".to_string(),
-                    raw: r1,
-                },
-                Reading {
-                    sensor_id: "s2".to_string(),
-                    raw: r2,
-                },
-            ],
+            let mut out = Vec::with_capacity(sim.sensor_count());
+            for i in 0..sim.sensor_count() {
+                out.push(Reading {
+                    sensor_id: format!("s{}", i + 1),
+                    raw: sim.sample(i),
+                });
+            }
+            out
         };
 
-        let payload = serde_json::to_vec(&msg).expect("reading serialization failed");
+        // Future: #[cfg(feature = "adc")] let readings = adc::read_all(...);
 
-        if let Err(e) = client
-            .publish(&topic, QoS::AtLeastOnce, false, payload)
-            .await
+        // This block is gated so the binary cannot compile without a sensor
+        // backend — the compile_error! above catches it first.
+        #[cfg(any(feature = "sim", feature = "adc"))]
         {
-            tracing::error!("publish error: {e}");
-        } else {
-            tracing::info!(ts = msg.ts, "published readings");
+            let msg = ReadingMsg {
+                ts: now_unix(),
+                readings,
+            };
+
+            let payload = serde_json::to_vec(&msg).expect("reading serialization failed");
+
+            if let Err(e) = client
+                .publish(&topic, QoS::AtLeastOnce, false, payload)
+                .await
+            {
+                tracing::error!("publish error: {e}");
+            } else {
+                tracing::info!(ts = msg.ts, "published readings");
+            }
         }
 
         sleep(Duration::from_secs(sample_every_s)).await;

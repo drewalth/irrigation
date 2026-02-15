@@ -26,8 +26,8 @@ RUN sqlite3 crates/hub/irrigation.db < crates/hub/migrations/0001_init.sql
 # Hub: build without gpio (mock valves — no rppal needed in container)
 RUN cargo build --release -p irrigation-hub
 
-# Node: standard build (already uses fake sensor data)
-RUN cargo build --release -p irrigation-node
+# Node: simulation-enabled build for local dev containers
+RUN cargo build --release -p irrigation-node --features sim
 
 # ── Hub runtime ──────────────────────────────────────────────────
 FROM debian:bookworm-slim AS hub
