@@ -30,6 +30,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time::Instant;
 use tracing::{error, info, warn};
 
+use config::OperationMode;
 use db::{compute_moisture, is_reading_plausible, Db, SensorConfig, ZoneConfig};
 use mqtt::{
     extract_node_id, extract_node_status_id, extract_zone_id, parse_valve_command, ReadingMsg,
@@ -104,6 +105,8 @@ async fn main() -> Result<()> {
     let cfg = config::load(&config_path)?;
     config::apply(&cfg, &db).await?;
     let max_concurrent_valves = cfg.max_concurrent_valves;
+    let mode = cfg.mode;
+    info!(?mode, "operation mode");
 
     // Load zone config from DB — this is the source of truth.
     let zones = db.load_zones().await?;
@@ -112,18 +115,23 @@ async fn main() -> Result<()> {
     }
 
     // Derive zone->GPIO mapping from persisted zone config.
-    let zone_to_gpio: Vec<(String, u8)> = zones
-        .iter()
-        .map(|z| {
-            let pin: u8 = z.valve_gpio_pin.try_into().with_context(|| {
-                format!(
-                    "zone '{}': valve_gpio_pin {} out of u8 range",
-                    z.zone_id, z.valve_gpio_pin
-                )
-            })?;
-            Ok((z.zone_id.clone(), pin))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let zone_to_gpio: Vec<(String, u8)> = if mode == OperationMode::Monitor {
+        // Monitor mode: no GPIO pins claimed.
+        Vec::new()
+    } else {
+        zones
+            .iter()
+            .map(|z| {
+                let pin: u8 = z.valve_gpio_pin.try_into().with_context(|| {
+                    format!(
+                        "zone '{}': valve_gpio_pin {} out of u8 range",
+                        z.zone_id, z.valve_gpio_pin
+                    )
+                })?;
+                Ok((z.zone_id.clone(), pin))
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
 
     // Build zone config lookup for safety limit enforcement + watchdog.
     let zone_configs: HashMap<String, ZoneConfig> =
@@ -156,7 +164,11 @@ async fn main() -> Result<()> {
         Arc::new(Mutex::new(HashMap::new()));
 
     // ── Shared state (ephemeral, for the web UI) ────────────────────
-    let shared = Arc::new(RwLock::new(SystemState::new(&zone_to_gpio)));
+    let mode_str = match mode {
+        OperationMode::Auto => "auto",
+        OperationMode::Monitor => "monitor",
+    };
+    let shared = Arc::new(RwLock::new(SystemState::new(&zone_to_gpio, mode_str)));
     {
         let mut st = shared.write().await;
         st.record_system("hub started".to_string());
@@ -170,7 +182,9 @@ async fn main() -> Result<()> {
     });
 
     // ── Valve watchdog ──────────────────────────────────────────────
-    let mut watchdog_handle = {
+    let mut watchdog_handle = if mode == OperationMode::Monitor {
+        tokio::spawn(async { std::future::pending::<()>().await })
+    } else {
         let wd_valves = Arc::clone(&valves);
         let wd_opened = Arc::clone(&valve_opened_at);
         let wd_shared = Arc::clone(&shared);
@@ -319,6 +333,7 @@ async fn main() -> Result<()> {
                 sched_mqtt,
                 sched_shared,
                 max_concurrent_valves,
+                mode,
             )
             .await;
         })
@@ -453,6 +468,7 @@ async fn main() -> Result<()> {
                                         &db,
                                         &shared,
                                         max_concurrent_valves,
+                                        mode,
                                     )
                                     .await;
                                 } else if let Some(node_id) =
@@ -807,7 +823,17 @@ async fn handle_valve_command(
     db: &Db,
     shared: &RwLock<SystemState>,
     max_concurrent_valves: usize,
+    mode: OperationMode,
 ) {
+    if mode == OperationMode::Monitor {
+        warn!(zone = %zone_id, "valve command ignored — system is in monitor mode");
+        let mut st = shared.write().await;
+        st.record_error(format!(
+            "valve command ignored for {zone_id} — system is in monitor mode"
+        ));
+        return;
+    }
+
     let on = match parse_valve_command(payload) {
         Ok(v) => v,
         Err(msg) => {

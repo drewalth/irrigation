@@ -4,6 +4,11 @@
 # Sensor IDs are qualified: "<node_id>/<local_sensor_id>"
 # Nodes publish local IDs (e.g. "s1"); the hub prepends the node_id.
 
+# Operation mode: "auto" (default) or "monitor".
+# auto    — full irrigation control (scheduler opens/closes valves)
+# monitor — soil moisture monitoring only (no valve actuation)
+mode = "auto"
+
 # Maximum number of valves open at the same time.  Prevents 12 V power supply
 # brown-out when driving many solenoid relay channels.  Set higher if your PSU
 # can handle the load; keep at 2 (default) for most installations.

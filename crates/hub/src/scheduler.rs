@@ -24,6 +24,7 @@ use rumqttc::{AsyncClient, QoS};
 use tokio::time::Instant;
 use tracing::{error, info, warn};
 
+use crate::config::OperationMode;
 use crate::db::{Db, ZoneConfig};
 use crate::state::SharedState;
 
@@ -57,6 +58,7 @@ pub async fn run(
     mqtt: AsyncClient,
     shared: SharedState,
     max_concurrent_valves: usize,
+    mode: OperationMode,
 ) {
     let mut states: HashMap<String, ZoneScheduleState> = zone_configs
         .keys()
@@ -73,12 +75,13 @@ pub async fn run(
         zones = zone_configs.len(),
         tick_sec = TICK_INTERVAL_SEC,
         max_concurrent_valves,
+        ?mode,
         "scheduler started"
     );
     {
         let mut st = shared.write().await;
         st.record_scheduler(format!(
-            "scheduler started (max concurrent valves: {max_concurrent_valves})"
+            "scheduler started (mode: {mode:?}, max concurrent valves: {max_concurrent_valves})"
         ));
     }
 
@@ -100,7 +103,9 @@ pub async fn run(
 
             match zone_state {
                 ZoneScheduleState::Idle => {
-                    if base_active + started_this_tick >= max_concurrent_valves {
+                    if mode == OperationMode::Auto
+                        && base_active + started_this_tick >= max_concurrent_valves
+                    {
                         continue;
                     }
                     handle_idle(
@@ -111,9 +116,12 @@ pub async fn run(
                         &mqtt,
                         &shared,
                         max_concurrent_valves,
+                        mode,
                     )
                     .await;
-                    if matches!(zone_state, ZoneScheduleState::Watering { .. }) {
+                    if mode == OperationMode::Auto
+                        && matches!(zone_state, ZoneScheduleState::Watering { .. })
+                    {
                         started_this_tick += 1;
                     }
                 }
@@ -141,31 +149,29 @@ async fn handle_idle(
     mqtt: &AsyncClient,
     shared: &SharedState,
     max_concurrent_valves: usize,
+    mode: OperationMode,
 ) {
-    // ── Guard: MQTT must be connected ────────────────────────────────
-    {
+    // ── Guards (auto mode only) ──────────────────────────────────
+    if mode == OperationMode::Auto {
         let st = shared.read().await;
         if !st.mqtt_connected {
             return;
         }
-        // ── Guard: zone must not already be on (manual override) ─────
         if let Some(z) = st.zones.get(zone_id) {
             if z.on {
                 return;
             }
         }
-        // ── Guard: concurrent valve limit ────────────────────────────
-        // Belt-and-suspenders with the tick-level counter in run().
         let active = st.zones.values().filter(|z| z.on).count();
         if active >= max_concurrent_valves {
             return;
         }
     }
 
-    // ── Guard: fresh sensor data ─────────────────────────────────────
+    // ── Guard: fresh sensor data (both modes) ────────────────────
     let latest = match db.latest_zone_moisture(zone_id).await {
         Ok(Some(v)) => v,
-        Ok(None) => return, // no readings at all yet
+        Ok(None) => return,
         Err(e) => {
             error!(zone = %zone_id, "scheduler: latest_zone_moisture failed: {e}");
             return;
@@ -184,21 +190,23 @@ async fn handle_idle(
         return;
     }
 
-    // ── Guard: daily limits not exhausted ────────────────────────────
-    let today = Db::today_yyyy_mm_dd();
-    match db.get_daily_counters(&today, zone_id).await {
-        Ok(c) => {
-            if c.pulses >= cfg.max_pulses_per_day || c.open_sec >= cfg.max_open_sec_per_day {
-                return; // safety handler would also block — stay quiet
+    // ── Guard: daily limits (auto mode only) ─────────────────────
+    if mode == OperationMode::Auto {
+        let today = Db::today_yyyy_mm_dd();
+        match db.get_daily_counters(&today, zone_id).await {
+            Ok(c) => {
+                if c.pulses >= cfg.max_pulses_per_day || c.open_sec >= cfg.max_open_sec_per_day {
+                    return;
+                }
             }
-        }
-        Err(e) => {
-            error!(zone = %zone_id, "scheduler: get_daily_counters failed: {e}");
-            return;
+            Err(e) => {
+                error!(zone = %zone_id, "scheduler: get_daily_counters failed: {e}");
+                return;
+            }
         }
     }
 
-    // ── Moisture check ───────────────────────────────────────────────
+    // ── Moisture check (both modes) ──────────────────────────────
     let avg_moisture = match db.avg_zone_moisture_last_n(zone_id, AVG_WINDOW).await {
         Ok(Some(v)) => v,
         Ok(None) => return,
@@ -209,10 +217,28 @@ async fn handle_idle(
     };
 
     if avg_moisture >= cfg.min_moisture {
-        return; // soil is wet enough
+        return;
     }
 
-    // ── Trigger watering pulse ───────────────────────────────────────
+    // ── Monitor mode: record alert, stay idle ────────────────────
+    if mode == OperationMode::Monitor {
+        info!(
+            zone = %zone_id,
+            avg_moisture = format!("{avg_moisture:.3}"),
+            min = format!("{:.3}", cfg.min_moisture),
+            "scheduler: low moisture alert (monitor mode)"
+        );
+        {
+            let mut st = shared.write().await;
+            st.record_scheduler(format!(
+                "{zone_id}: low moisture alert ({avg_moisture:.3} < min {:.3})",
+                cfg.min_moisture
+            ));
+        }
+        return; // stay Idle — no valve actuation
+    }
+
+    // ── Auto mode: trigger watering pulse ────────────────────────
     info!(
         zone = %zone_id,
         avg_moisture = format!("{avg_moisture:.3}"),
@@ -377,6 +403,7 @@ fn now_unix() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::OperationMode;
     use crate::db::{Db, SensorConfig, ZoneConfig};
     use crate::state::SystemState;
     use std::sync::Arc;
@@ -400,7 +427,7 @@ mod tests {
 
     /// Build a SharedState with one zone.
     fn test_shared() -> SharedState {
-        Arc::new(RwLock::new(SystemState::new(&[("z1".to_string(), 17)])))
+        Arc::new(RwLock::new(SystemState::new(&[("z1".to_string(), 17)], "auto")))
     }
 
     /// Set up an in-memory DB with a zone and sensor, then seed readings.
@@ -458,7 +485,7 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -476,7 +503,7 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -494,7 +521,7 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
 
         assert!(matches!(state, ZoneScheduleState::Watering { .. }));
     }
@@ -509,7 +536,7 @@ mod tests {
         // mqtt_connected defaults to false
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -528,7 +555,7 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -552,7 +579,7 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -676,7 +703,7 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -692,7 +719,7 @@ mod tests {
         let shared: SharedState = Arc::new(RwLock::new(SystemState::new(&[
             ("z1".to_string(), 17),
             ("z2".to_string(), 27),
-        ])));
+        ], "auto")));
         {
             let mut st = shared.write().await;
             st.mqtt_connected = true;
@@ -701,7 +728,7 @@ mod tests {
 
         let mut state = ZoneScheduleState::Idle;
         // max_concurrent_valves = 1 → z2 fills the single slot.
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 1).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 1, OperationMode::Auto).await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -714,7 +741,7 @@ mod tests {
         let shared: SharedState = Arc::new(RwLock::new(SystemState::new(&[
             ("z1".to_string(), 17),
             ("z2".to_string(), 27),
-        ])));
+        ], "auto")));
         {
             let mut st = shared.write().await;
             st.mqtt_connected = true;
@@ -723,8 +750,104 @@ mod tests {
 
         let mut state = ZoneScheduleState::Idle;
         // max_concurrent_valves = 2 → one slot still available.
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
 
         assert!(matches!(state, ZoneScheduleState::Watering { .. }));
+    }
+
+    // -- Monitor mode: low moisture → stays idle, records alert --------
+
+    #[tokio::test]
+    async fn monitor_mode_low_moisture_stays_idle_records_alert() {
+        let db = seeded_db(&[0.2, 0.2, 0.2, 0.2, 0.2]).await;
+        let (mqtt, _el) = test_mqtt();
+        let shared = test_shared();
+
+        let mut state = ZoneScheduleState::Idle;
+        handle_idle(
+            "z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2,
+            OperationMode::Monitor,
+        )
+        .await;
+
+        // Must stay Idle — never transitions to Watering.
+        assert!(matches!(state, ZoneScheduleState::Idle));
+
+        // Must have recorded a low-moisture alert event.
+        let st = shared.read().await;
+        let scheduler_events: Vec<_> = st
+            .events
+            .iter()
+            .filter(|e| matches!(e.kind, crate::state::EventKind::Scheduler))
+            .collect();
+        assert!(
+            !scheduler_events.is_empty(),
+            "expected at least one scheduler event"
+        );
+        assert!(
+            scheduler_events.last().unwrap().detail.contains("low moisture alert"),
+            "expected low moisture alert, got: {}",
+            scheduler_events.last().unwrap().detail
+        );
+    }
+
+    // -- Monitor mode: adequate moisture → stays idle, no alert --------
+
+    #[tokio::test]
+    async fn monitor_mode_adequate_moisture_stays_idle_no_alert() {
+        let db = seeded_db(&[0.6, 0.6, 0.6, 0.6, 0.6]).await;
+        let (mqtt, _el) = test_mqtt();
+        let shared = test_shared();
+
+        let mut state = ZoneScheduleState::Idle;
+        handle_idle(
+            "z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2,
+            OperationMode::Monitor,
+        )
+        .await;
+
+        assert!(matches!(state, ZoneScheduleState::Idle));
+
+        // No scheduler events should be recorded.
+        let st = shared.read().await;
+        let scheduler_events: Vec<_> = st
+            .events
+            .iter()
+            .filter(|e| matches!(e.kind, crate::state::EventKind::Scheduler))
+            .collect();
+        assert!(
+            scheduler_events.is_empty(),
+            "expected no scheduler events, got: {:?}",
+            scheduler_events
+        );
+    }
+
+    // -- Monitor mode: skips MQTT connectivity check --------------------
+
+    #[tokio::test]
+    async fn monitor_mode_ignores_mqtt_disconnected() {
+        let db = seeded_db(&[0.2, 0.2, 0.2, 0.2, 0.2]).await;
+        let (mqtt, _el) = test_mqtt();
+        let shared = test_shared();
+        // mqtt_connected defaults to false — in auto mode this would skip.
+
+        let mut state = ZoneScheduleState::Idle;
+        handle_idle(
+            "z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2,
+            OperationMode::Monitor,
+        )
+        .await;
+
+        // In monitor mode, the MQTT guard is skipped, so the alert IS recorded.
+        let st = shared.read().await;
+        let scheduler_events: Vec<_> = st
+            .events
+            .iter()
+            .filter(|e| matches!(e.kind, crate::state::EventKind::Scheduler))
+            .collect();
+        assert!(
+            !scheduler_events.is_empty(),
+            "expected alert even with MQTT disconnected in monitor mode"
+        );
     }
 }

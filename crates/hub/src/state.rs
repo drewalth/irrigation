@@ -24,6 +24,8 @@ pub type SharedState = Arc<RwLock<SystemState>>;
 pub struct SystemState {
     pub started_at: Instant,
     pub mqtt_connected: bool,
+    /// Operation mode label: "auto" or "monitor".
+    pub mode: String,
     pub nodes: HashMap<String, NodeState>,
     pub zones: HashMap<String, ZoneState>,
     pub events: VecDeque<SystemEvent>,
@@ -52,7 +54,7 @@ pub struct ZoneState {
     pub last_changed: Option<OffsetDateTime>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct SystemEvent {
     #[serde(with = "time::serde::rfc3339")]
     pub ts: OffsetDateTime,
@@ -60,7 +62,7 @@ pub struct SystemEvent {
     pub detail: String,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EventKind {
     Reading,
@@ -78,6 +80,7 @@ pub enum EventKind {
 pub struct StatusResponse {
     pub uptime_secs: u64,
     pub mqtt_connected: bool,
+    pub mode: String,
     pub nodes: HashMap<String, NodeState>,
     pub zones: HashMap<String, ZoneState>,
     pub events: Vec<SystemEvent>,
@@ -88,7 +91,7 @@ pub struct StatusResponse {
 // ---------------------------------------------------------------------------
 
 impl SystemState {
-    pub fn new(zone_to_gpio: &[(String, u8)]) -> Self {
+    pub fn new(zone_to_gpio: &[(String, u8)], mode: &str) -> Self {
         let mut zones = HashMap::new();
         for (zone_id, pin) in zone_to_gpio {
             zones.insert(
@@ -104,6 +107,7 @@ impl SystemState {
         Self {
             started_at: Instant::now(),
             mqtt_connected: false,
+            mode: mode.to_string(),
             nodes: HashMap::new(),
             zones,
             events: VecDeque::with_capacity(MAX_EVENTS),
@@ -198,6 +202,7 @@ impl SystemState {
         StatusResponse {
             uptime_secs: self.started_at.elapsed().as_secs(),
             mqtt_connected: self.mqtt_connected,
+            mode: self.mode.clone(),
             nodes: self.nodes.clone(),
             zones: self.zones.clone(),
             events: self.events.iter().rev().cloned().collect(),
@@ -226,7 +231,7 @@ mod tests {
 
     /// Helper: build a two-zone state for most tests.
     fn two_zone_state() -> SystemState {
-        SystemState::new(&[("zone1".to_string(), 17), ("zone2".to_string(), 27)])
+        SystemState::new(&[("zone1".to_string(), 17), ("zone2".to_string(), 27)], "auto")
     }
 
     /// Helper: build a simple sensor reading vec.
@@ -282,7 +287,7 @@ mod tests {
 
     #[test]
     fn new_with_no_zones() {
-        let st = SystemState::new(&[]);
+        let st = SystemState::new(&[], "auto");
         assert!(st.zones.is_empty());
     }
 
@@ -592,6 +597,16 @@ mod tests {
         assert_eq!(status.zones.len(), 2);
         assert_eq!(status.nodes.len(), 1);
         assert!(status.nodes.contains_key("node-x"));
+    }
+
+    #[test]
+    fn to_status_includes_mode() {
+        let st = SystemState::new(&[("z1".to_string(), 17)], "monitor");
+        let status = st.to_status();
+        assert_eq!(status.mode, "monitor");
+
+        let st_auto = two_zone_state();
+        assert_eq!(st_auto.to_status().mode, "auto");
     }
 
     #[test]

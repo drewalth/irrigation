@@ -2,10 +2,34 @@
 //! sensors.
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use crate::db::{Db, SensorConfig, ZoneConfig};
+
+// ---------------------------------------------------------------------------
+// Operation mode
+// ---------------------------------------------------------------------------
+
+/// Global operation mode for the irrigation system.
+///
+/// - `Auto` (default): full irrigation control — the scheduler opens/closes
+///   valves based on soil moisture readings.
+/// - `Monitor`: soil moisture monitoring only — no valve actuation.  The
+///   scheduler still evaluates moisture and records low-moisture alert events
+///   in the event ring buffer, but never publishes ON commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OperationMode {
+    Auto,
+    Monitor,
+}
+
+impl Default for OperationMode {
+    fn default() -> Self {
+        OperationMode::Auto
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Config file structures
@@ -13,6 +37,9 @@ use crate::db::{Db, SensorConfig, ZoneConfig};
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
+    /// Operation mode: `auto` (default) or `monitor`.
+    #[serde(default)]
+    pub mode: OperationMode,
     /// Maximum number of valves that can be open simultaneously. Prevents
     /// 12 V power supply brown-out when driving many solenoid relay channels.
     #[serde(default = "default_max_concurrent_valves")]
@@ -33,12 +60,30 @@ pub struct ZoneEntry {
     pub name: String,
     pub min_moisture: f32,
     pub target_moisture: f32,
+    #[serde(default = "default_pulse_sec")]
     pub pulse_sec: i64,
+    #[serde(default = "default_soak_min")]
     pub soak_min: i64,
+    #[serde(default = "default_max_open_sec_per_day")]
     pub max_open_sec_per_day: i64,
+    #[serde(default = "default_max_pulses_per_day")]
     pub max_pulses_per_day: i64,
     pub stale_timeout_min: i64,
+    #[serde(default)]
     pub valve_gpio_pin: i64,
+}
+
+fn default_pulse_sec() -> i64 {
+    30
+}
+fn default_soak_min() -> i64 {
+    20
+}
+fn default_max_open_sec_per_day() -> i64 {
+    180
+}
+fn default_max_pulses_per_day() -> i64 {
+    6
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,7 +124,8 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         let mut errors: Vec<String> = Vec::new();
 
-        if self.max_concurrent_valves == 0 {
+        // max_concurrent_valves is only relevant in auto mode.
+        if self.mode == OperationMode::Auto && self.max_concurrent_valves == 0 {
             errors.push("max_concurrent_valves must be at least 1".to_string());
         }
 
@@ -101,6 +147,7 @@ impl Config {
     fn validate_zones(&self, errors: &mut Vec<String>) {
         let mut seen_ids: HashSet<&str> = HashSet::new();
         let mut seen_pins: HashSet<i64> = HashSet::new();
+        let is_auto = self.mode == OperationMode::Auto;
 
         for (i, z) in self.zones.iter().enumerate() {
             let ctx = || {
@@ -111,7 +158,7 @@ impl Config {
                 }
             };
 
-            // ── Identity ────────────────────────────────────────
+            // ── Identity (always validated) ─────────────────────
             if z.zone_id.trim().is_empty() {
                 errors.push(format!("{}: zone_id is empty", ctx()));
             } else if !seen_ids.insert(&z.zone_id) {
@@ -122,7 +169,7 @@ impl Config {
                 errors.push(format!("{}: name is empty", ctx()));
             }
 
-            // ── Moisture bounds ─────────────────────────────────
+            // ── Moisture bounds (always validated) ───────────────
             if !(0.0..=1.0).contains(&z.min_moisture) {
                 errors.push(format!(
                     "{}: min_moisture {} out of range [0.0, 1.0]",
@@ -146,35 +193,39 @@ impl Config {
                 ));
             }
 
-            // ── Timing values (all must be positive) ────────────
-            if z.pulse_sec <= 0 {
-                errors.push(format!(
-                    "{}: pulse_sec must be positive, got {}",
-                    ctx(),
-                    z.pulse_sec
-                ));
+            // ── Valve timing values (auto mode only) ─────────────
+            if is_auto {
+                if z.pulse_sec <= 0 {
+                    errors.push(format!(
+                        "{}: pulse_sec must be positive, got {}",
+                        ctx(),
+                        z.pulse_sec
+                    ));
+                }
+                if z.soak_min <= 0 {
+                    errors.push(format!(
+                        "{}: soak_min must be positive, got {}",
+                        ctx(),
+                        z.soak_min
+                    ));
+                }
+                if z.max_open_sec_per_day <= 0 {
+                    errors.push(format!(
+                        "{}: max_open_sec_per_day must be positive, got {}",
+                        ctx(),
+                        z.max_open_sec_per_day
+                    ));
+                }
+                if z.max_pulses_per_day <= 0 {
+                    errors.push(format!(
+                        "{}: max_pulses_per_day must be positive, got {}",
+                        ctx(),
+                        z.max_pulses_per_day
+                    ));
+                }
             }
-            if z.soak_min <= 0 {
-                errors.push(format!(
-                    "{}: soak_min must be positive, got {}",
-                    ctx(),
-                    z.soak_min
-                ));
-            }
-            if z.max_open_sec_per_day <= 0 {
-                errors.push(format!(
-                    "{}: max_open_sec_per_day must be positive, got {}",
-                    ctx(),
-                    z.max_open_sec_per_day
-                ));
-            }
-            if z.max_pulses_per_day <= 0 {
-                errors.push(format!(
-                    "{}: max_pulses_per_day must be positive, got {}",
-                    ctx(),
-                    z.max_pulses_per_day
-                ));
-            }
+
+            // stale_timeout_min is needed in both modes (staleness detection).
             if z.stale_timeout_min <= 0 {
                 errors.push(format!(
                     "{}: stale_timeout_min must be positive, got {}",
@@ -183,8 +234,11 @@ impl Config {
                 ));
             }
 
-            // pulse_sec cannot exceed the daily maximum
-            if z.pulse_sec > 0 && z.max_open_sec_per_day > 0 && z.pulse_sec > z.max_open_sec_per_day
+            // pulse_sec cannot exceed the daily maximum (auto mode only).
+            if is_auto
+                && z.pulse_sec > 0
+                && z.max_open_sec_per_day > 0
+                && z.pulse_sec > z.max_open_sec_per_day
             {
                 errors.push(format!(
                     "{}: pulse_sec ({}) exceeds max_open_sec_per_day ({})",
@@ -194,20 +248,22 @@ impl Config {
                 ));
             }
 
-            // ── GPIO pin whitelist ──────────────────────────────
-            if !VALID_GPIO_PINS.contains(&z.valve_gpio_pin) {
-                errors.push(format!(
-                    "{}: valve_gpio_pin {} is not a safe GPIO pin (allowed: {:?})",
-                    ctx(),
-                    z.valve_gpio_pin,
-                    VALID_GPIO_PINS,
-                ));
-            } else if !seen_pins.insert(z.valve_gpio_pin) {
-                errors.push(format!(
-                    "{}: valve_gpio_pin {} is already used by another zone",
-                    ctx(),
-                    z.valve_gpio_pin
-                ));
+            // ── GPIO pin whitelist (auto mode only) ──────────────
+            if is_auto {
+                if !VALID_GPIO_PINS.contains(&z.valve_gpio_pin) {
+                    errors.push(format!(
+                        "{}: valve_gpio_pin {} is not a safe GPIO pin (allowed: {:?})",
+                        ctx(),
+                        z.valve_gpio_pin,
+                        VALID_GPIO_PINS,
+                    ));
+                } else if !seen_pins.insert(z.valve_gpio_pin) {
+                    errors.push(format!(
+                        "{}: valve_gpio_pin {} is already used by another zone",
+                        ctx(),
+                        z.valve_gpio_pin
+                    ));
+                }
             }
         }
     }
@@ -365,8 +421,29 @@ mod tests {
 
     fn valid_config() -> Config {
         Config {
+            mode: OperationMode::Auto,
             max_concurrent_valves: 2,
             zones: vec![valid_zone()],
+            sensors: vec![valid_sensor()],
+        }
+    }
+
+    fn monitor_config() -> Config {
+        Config {
+            mode: OperationMode::Monitor,
+            max_concurrent_valves: 2,
+            zones: vec![ZoneEntry {
+                zone_id: "z1".into(),
+                name: "Zone 1".into(),
+                min_moisture: 0.3,
+                target_moisture: 0.5,
+                pulse_sec: 0,          // irrelevant in monitor mode
+                soak_min: 0,           // irrelevant in monitor mode
+                max_open_sec_per_day: 0, // irrelevant in monitor mode
+                max_pulses_per_day: 0, // irrelevant in monitor mode
+                stale_timeout_min: 30,
+                valve_gpio_pin: 0,     // irrelevant in monitor mode
+            }],
             sensors: vec![valid_sensor()],
         }
     }
@@ -429,6 +506,7 @@ raw_wet = 12000
     #[test]
     fn empty_config_passes() {
         let cfg = Config {
+            mode: OperationMode::Auto,
             max_concurrent_valves: 2,
             zones: vec![],
             sensors: vec![],
@@ -439,6 +517,7 @@ raw_wet = 12000
     #[test]
     fn multi_zone_multi_sensor_passes() {
         let cfg = Config {
+            mode: OperationMode::Auto,
             max_concurrent_valves: 2,
             zones: vec![
                 ZoneEntry {
@@ -671,6 +750,7 @@ raw_wet = 12000
     #[test]
     fn zone_duplicate_gpio_rejected() {
         let cfg = Config {
+            mode: OperationMode::Auto,
             max_concurrent_valves: 2,
             zones: vec![
                 ZoneEntry {
@@ -770,6 +850,7 @@ raw_wet = 12000
     #[test]
     fn multiple_errors_collected() {
         let cfg = Config {
+            mode: OperationMode::Auto,
             max_concurrent_valves: 2,
             zones: vec![ZoneEntry {
                 zone_id: "".into(),
@@ -805,12 +886,21 @@ raw_wet = 12000
     // -- max_concurrent_valves --------------------------------------------
 
     #[test]
-    fn max_concurrent_valves_zero_rejected() {
+    fn max_concurrent_valves_zero_rejected_auto_mode() {
         let cfg = Config {
             max_concurrent_valves: 0,
             ..valid_config()
         };
         assert_validation_err(&cfg, "max_concurrent_valves must be at least 1");
+    }
+
+    #[test]
+    fn max_concurrent_valves_zero_allowed_monitor_mode() {
+        let cfg = Config {
+            max_concurrent_valves: 0,
+            ..monitor_config()
+        };
+        cfg.validate().unwrap();
     }
 
     #[test]
@@ -834,6 +924,117 @@ raw_wet = 12000
         let toml_str = "max_concurrent_valves = 4\n";
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.max_concurrent_valves, 4);
+    }
+
+    // -- Operation mode ---------------------------------------------------
+
+    #[test]
+    fn parse_mode_auto_from_toml() {
+        let toml_str = "mode = \"auto\"\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.mode, OperationMode::Auto);
+    }
+
+    #[test]
+    fn parse_mode_monitor_from_toml() {
+        let toml_str = "mode = \"monitor\"\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.mode, OperationMode::Monitor);
+    }
+
+    #[test]
+    fn default_mode_is_auto_when_omitted() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.mode, OperationMode::Auto);
+    }
+
+    #[test]
+    fn invalid_mode_string_rejected() {
+        let toml_str = "mode = \"turbo\"\n";
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn monitor_mode_minimal_zone_config_passes() {
+        // Monitor mode: valve-specific fields default to zero/sensible values.
+        // Validation should pass even with zero pulse_sec, valve_gpio_pin=0, etc.
+        monitor_config().validate().unwrap();
+    }
+
+    #[test]
+    fn monitor_mode_skips_gpio_validation() {
+        let mut cfg = monitor_config();
+        cfg.zones[0].valve_gpio_pin = 0; // would fail in auto mode
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn monitor_mode_skips_pulse_sec_validation() {
+        let mut cfg = monitor_config();
+        cfg.zones[0].pulse_sec = 0; // would fail in auto mode
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn monitor_mode_still_validates_identity() {
+        let mut cfg = monitor_config();
+        cfg.zones[0].zone_id = "".into();
+        assert_validation_err(&cfg, "zone_id is empty");
+    }
+
+    #[test]
+    fn monitor_mode_still_validates_moisture_bounds() {
+        let mut cfg = monitor_config();
+        cfg.zones[0].min_moisture = -0.1;
+        assert_validation_err(&cfg, "min_moisture");
+    }
+
+    #[test]
+    fn monitor_mode_still_validates_stale_timeout() {
+        let mut cfg = monitor_config();
+        cfg.zones[0].stale_timeout_min = 0;
+        assert_validation_err(&cfg, "stale_timeout_min must be positive");
+    }
+
+    #[test]
+    fn auto_mode_still_requires_positive_pulse_sec() {
+        let mut cfg = valid_config();
+        cfg.zones[0].pulse_sec = 0;
+        assert_validation_err(&cfg, "pulse_sec must be positive");
+    }
+
+    #[test]
+    fn auto_mode_still_requires_valid_gpio() {
+        let mut cfg = valid_config();
+        cfg.zones[0].valve_gpio_pin = 0;
+        assert_validation_err(&cfg, "not a safe GPIO pin");
+    }
+
+    #[test]
+    fn monitor_mode_parses_minimal_zone_toml() {
+        let toml_str = r#"
+mode = "monitor"
+
+[[zones]]
+zone_id = "z1"
+name = "Zone 1"
+min_moisture = 0.3
+target_moisture = 0.5
+stale_timeout_min = 30
+
+[[sensors]]
+sensor_id = "node-a/s1"
+node_id = "node-a"
+zone_id = "z1"
+raw_dry = 26000
+raw_wet = 12000
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.mode, OperationMode::Monitor);
+        assert_eq!(config.zones[0].pulse_sec, 30); // serde default
+        assert_eq!(config.zones[0].valve_gpio_pin, 0); // serde default
+        config.validate().unwrap();
     }
 
     // -- DB integration ---------------------------------------------------

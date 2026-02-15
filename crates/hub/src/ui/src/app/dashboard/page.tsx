@@ -7,22 +7,26 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { SiteHeader } from "@/components/site-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useStatus } from "@/hooks/use-api";
 
 interface DashboardPageProps {
   currentPage: string;
   onNavigate: (page: string) => void;
 }
 
-function EventsTabs() {
+function EventsTabs({ mode }: { mode?: "auto" | "monitor" }) {
+  const isMonitor = mode === "monitor";
   return (
-    <Tabs defaultValue="events">
+    <Tabs defaultValue={isMonitor ? "log" : "events"}>
       <TabsList>
-        <TabsTrigger value="events">Watering Events</TabsTrigger>
+        {!isMonitor && <TabsTrigger value="events">Watering Events</TabsTrigger>}
         <TabsTrigger value="log">System Log</TabsTrigger>
       </TabsList>
-      <TabsContent value="events">
-        <WateringEventsTable />
-      </TabsContent>
+      {!isMonitor && (
+        <TabsContent value="events">
+          <WateringEventsTable />
+        </TabsContent>
+      )}
       <TabsContent value="log">
         <EventLog />
       </TabsContent>
@@ -31,6 +35,7 @@ function EventsTabs() {
 }
 
 export default function Page({ currentPage, onNavigate }: DashboardPageProps) {
+  const { data: status } = useStatus();
   return (
     <SidebarProvider
       style={
@@ -58,7 +63,7 @@ export default function Page({ currentPage, onNavigate }: DashboardPageProps) {
                     <MoistureChart />
                   </div>
                   <div className="px-4 lg:px-6">
-                    <EventsTabs />
+                    <EventsTabs mode={status?.mode} />
                   </div>
                 </>
               )}
@@ -70,7 +75,7 @@ export default function Page({ currentPage, onNavigate }: DashboardPageProps) {
               )}
               {currentPage === "events" && (
                 <div className="px-4 lg:px-6">
-                  <EventsTabs />
+                  <EventsTabs mode={status?.mode} />
                 </div>
               )}
             </div>

@@ -612,7 +612,7 @@ mod tests {
         db.migrate().await.unwrap();
 
         let zones = vec![("zone1".to_string(), 17), ("zone2".to_string(), 27)];
-        let shared = Arc::new(RwLock::new(SystemState::new(&zones)));
+        let shared = Arc::new(RwLock::new(SystemState::new(&zones, "auto")));
 
         AppState { shared, db }
     }

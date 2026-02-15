@@ -114,6 +114,18 @@ const Footer = () => {
                   {formatUptime(uptimeSecs)}
                 </Badge>
               )}
+              {status && (
+                <Badge
+                  variant="outline"
+                  className={`text-xs ${
+                    status.mode === "monitor"
+                      ? "border-purple-500 bg-purple-50 text-purple-700 dark:bg-purple-950 dark:text-purple-400"
+                      : "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-400"
+                  }`}
+                >
+                  {status.mode === "monitor" ? "Monitor" : "Auto"}
+                </Badge>
+              )}
             </span>
           </SidebarMenuButton>
         </SidebarMenuItem>

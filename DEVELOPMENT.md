@@ -124,6 +124,10 @@ Run `make help` for the full target list. Key targets:
 | `DB_URL` | hub | `sqlite:crates/hub/irrigation.db?mode=rwc` | Runtime database path |
 | `CONFIG_PATH` | hub | `config.toml` | Zone/sensor configuration file |
 
+### Operation Mode
+
+The `mode` field in `config.toml` controls whether the system operates in `auto` (default) or `monitor` mode. In monitor mode, no GPIO pins are claimed and all valve actuation is blocked.
+
 ## Gotchas
 
 1. **`gpio` feature = compile error on non-Pi.**

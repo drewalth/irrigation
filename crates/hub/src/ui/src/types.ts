@@ -3,6 +3,7 @@
 export interface StatusResponse {
   uptime_secs: number;
   mqtt_connected: boolean;
+  mode: "auto" | "monitor";
   nodes: Record<string, NodeState>;
   zones: Record<string, ZoneState>;
   events: SystemEvent[];
@@ -26,7 +27,7 @@ export interface ZoneState {
   last_changed: string | null;
 }
 
-export type EventKind = "reading" | "valve" | "error" | "system";
+export type EventKind = "reading" | "valve" | "error" | "system" | "scheduler";
 
 export interface SystemEvent {
   /** ISO-8601 timestamp */

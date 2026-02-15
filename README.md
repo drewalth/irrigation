@@ -57,6 +57,20 @@ Lightweight nodes placed near plants. They read soil moisture sensors, publish t
 
 The system uses pulse-and-soak irrigation: when moisture drops below a threshold, a valve opens briefly (pulse), water absorbs into the soil (soak period), then moisture is re-evaluated. This prevents runoff, sensor lag issues, overwatering, and oscillating valve behavior.
 
+## Operation Modes
+
+The system supports two operation modes, configured via `mode` in `config.toml`:
+
+| Mode | Description |
+|------|-------------|
+| `auto` (default) | Full irrigation control — the scheduler monitors soil moisture and automatically opens/closes valves using pulse/soak watering cycles. |
+| `monitor` | Soil moisture monitoring only — no valve actuation. The scheduler still evaluates moisture levels and records low-moisture alerts in the event log, visible on the dashboard. Ideal for deployments without valve hardware. |
+
+In monitor mode:
+- All valve commands (both scheduler-driven and manual) are blocked.
+- Valve-specific config fields (`pulse_sec`, `soak_min`, `max_open_sec_per_day`, `max_pulses_per_day`, `valve_gpio_pin`) become optional with sensible defaults.
+- The dashboard adapts to show moisture alerts instead of valve status.
+
 ## Project Structure
 
 ```

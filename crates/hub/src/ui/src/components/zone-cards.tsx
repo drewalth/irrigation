@@ -112,6 +112,7 @@ function ZoneCard({
   allReadings,
   counters,
   countersLoading,
+  mode,
 }: {
   zone: ZoneConfig;
   state: ZoneState | undefined;
@@ -119,8 +120,10 @@ function ZoneCard({
   allReadings: Record<string, SensorReading[]>;
   counters: DailyCounters | null;
   countersLoading: boolean;
+  mode?: "auto" | "monitor";
 }) {
   const isOn = state?.on ?? false;
+  const isMonitor = mode === "monitor";
 
   // Find the latest moisture reading for sensors belonging to this zone
   const zoneSensors = sensors.filter((s) => s.zone_id === zone.zone_id);
@@ -136,6 +139,8 @@ function ZoneCard({
     if (latestMoisture !== null) break;
   }
 
+  const isBelowMin = latestMoisture !== null && latestMoisture < zone.min_moisture;
+
   const openSecRatio = counters
     ? counters.open_sec / zone.max_open_sec_per_day
     : 0;
@@ -146,24 +151,39 @@ function ZoneCard({
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle className="text-base font-semibold">{zone.name}</CardTitle>
-          <Badge
-            variant="outline"
-            className={
-              isOn
-                ? "border-green-500 bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-400"
-                : "border-muted text-muted-foreground"
-            }
-          >
-            {isOn && (
-              <span className="relative mr-1 flex size-2">
-                <span className="absolute inline-flex size-full animate-ping rounded-full bg-green-400 opacity-75" />
-                <span className="relative inline-flex size-2 rounded-full bg-green-500" />
-              </span>
-            )}
-            {isOn ? "ON" : "OFF"}
-          </Badge>
+          {isMonitor ? (
+            latestMoisture !== null && (
+              <Badge
+                variant="outline"
+                className={
+                  isBelowMin
+                    ? "border-red-500 bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-400"
+                    : "border-green-500 bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-400"
+                }
+              >
+                {isBelowMin ? "Low Moisture" : "OK"}
+              </Badge>
+            )
+          ) : (
+            <Badge
+              variant="outline"
+              className={
+                isOn
+                  ? "border-green-500 bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-400"
+                  : "border-muted text-muted-foreground"
+              }
+            >
+              {isOn && (
+                <span className="relative mr-1 flex size-2">
+                  <span className="absolute inline-flex size-full animate-ping rounded-full bg-green-400 opacity-75" />
+                  <span className="relative inline-flex size-2 rounded-full bg-green-500" />
+                </span>
+              )}
+              {isOn ? "ON" : "OFF"}
+            </Badge>
+          )}
         </div>
-        {state?.last_changed && (
+        {!isMonitor && state?.last_changed && (
           <CardDescription>
             Valve changed {timeAgo(state.last_changed)}
           </CardDescription>
@@ -192,27 +212,29 @@ function ZoneCard({
           </div>
         )}
 
-        {/* Daily Usage */}
-        {countersLoading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-2 w-full" />
-            <Skeleton className="h-2 w-full" />
-          </div>
-        ) : (
-          <>
-            <ProgressBar
-              value={counters?.open_sec ?? 0}
-              max={zone.max_open_sec_per_day}
-              colorClass={usageBarColor(openSecRatio)}
-              label={`Daily usage · ${formatDuration(counters?.open_sec ?? 0)} / ${formatDuration(zone.max_open_sec_per_day)}`}
-            />
-            <ProgressBar
-              value={counters?.pulses ?? 0}
-              max={zone.max_pulses_per_day}
-              colorClass={usageBarColor(pulsesRatio)}
-              label={`Pulses · ${counters?.pulses ?? 0} / ${zone.max_pulses_per_day}`}
-            />
-          </>
+        {/* Daily Usage — auto mode only */}
+        {!isMonitor && (
+          countersLoading ? (
+            <div className="space-y-2">
+              <Skeleton className="h-2 w-full" />
+              <Skeleton className="h-2 w-full" />
+            </div>
+          ) : (
+            <>
+              <ProgressBar
+                value={counters?.open_sec ?? 0}
+                max={zone.max_open_sec_per_day}
+                colorClass={usageBarColor(openSecRatio)}
+                label={`Daily usage · ${formatDuration(counters?.open_sec ?? 0)} / ${formatDuration(zone.max_open_sec_per_day)}`}
+              />
+              <ProgressBar
+                value={counters?.pulses ?? 0}
+                max={zone.max_pulses_per_day}
+                colorClass={usageBarColor(pulsesRatio)}
+                label={`Pulses · ${counters?.pulses ?? 0} / ${zone.max_pulses_per_day}`}
+              />
+            </>
+          )
         )}
       </CardContent>
     </Card>
@@ -309,6 +331,7 @@ export function ZoneCards() {
           allReadings={allReadings}
           counters={countersMap[zone.zone_id] ?? null}
           countersLoading={countersLoading}
+          mode={status?.mode}
         />
       ))}
     </div>

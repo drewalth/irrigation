@@ -9,6 +9,7 @@ const BORDER_COLOR: Record<EventKind, string> = {
   valve: "border-l-green-500",
   error: "border-l-red-500",
   system: "border-l-gray-500",
+  scheduler: "border-l-purple-500",
 };
 
 const BADGE_CLASS: Record<EventKind, string> = {
@@ -16,6 +17,7 @@ const BADGE_CLASS: Record<EventKind, string> = {
   valve: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
   error: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
   system: "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200",
+  scheduler: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
 };
 
 const MAX_EVENTS = 50;
