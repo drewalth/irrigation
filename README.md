@@ -2,7 +2,11 @@
 
 ![Irrigation System](https://www.drewalth.com/_astro/irrigation.02sYVLOS_tTYGC.webp)
 
-Another DIY irrigation system... but this one is different.
+> [!IMPORTANT]
+> This project is a work in progress. It is not bulletproof, but it is functional.
+> I'm working on this in my free time, and it's not my primary focus. So docs may not
+> be _totally_ complete.
+> Continue reading the overview below, or skip to the [walkthrough](WALKTHROUGH.md) to get started.
 
 A low-cost, distributed, Rust-powered home irrigation system. Soil moisture telemetry, gravity-fed watering, and safe, state-driven control logic — all running locally on Raspberry Pi hardware.
 
