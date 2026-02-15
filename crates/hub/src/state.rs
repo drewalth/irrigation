@@ -62,6 +62,7 @@ pub enum EventKind {
     Valve,
     Error,
     System,
+    Scheduler,
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +148,11 @@ impl SystemState {
     /// Record a generic system event.
     pub fn record_system(&mut self, detail: String) {
         self.push_event(EventKind::System, detail);
+    }
+
+    /// Record a scheduler decision event.
+    pub fn record_scheduler(&mut self, detail: String) {
+        self.push_event(EventKind::Scheduler, detail);
     }
 
     /// Force all zone states to OFF (used during emergency shutdowns / MQTT errors).

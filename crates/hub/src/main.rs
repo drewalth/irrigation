@@ -12,6 +12,7 @@
 mod config;
 mod db;
 mod mqtt;
+mod scheduler;
 mod state;
 mod valve;
 mod web;
@@ -219,6 +220,17 @@ async fn main() -> Result<()> {
     client.subscribe("tele/+/reading", QoS::AtLeastOnce).await?;
     client.subscribe("valve/+/set", QoS::AtLeastOnce).await?;
     info!("subscribed to tele/+/reading and valve/+/set");
+
+    // ── Auto-watering scheduler ─────────────────────────────────────
+    {
+        let sched_db = db.clone();
+        let sched_configs = zone_configs.clone();
+        let sched_mqtt = client.clone();
+        let sched_shared = Arc::clone(&shared);
+        tokio::spawn(async move {
+            scheduler::run(sched_db, sched_configs, sched_mqtt, sched_shared).await;
+        });
+    }
 
     // ── Signal handling ─────────────────────────────────────────────
     let ctrl_c = tokio::signal::ctrl_c();

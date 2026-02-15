@@ -293,7 +293,7 @@ impl Db {
             .collect())
     }
 
-    #[allow(dead_code)] // Used by upcoming auto-watering scheduler
+    #[allow(dead_code)] // reserved for future per-node diagnostics
     pub async fn sensors_for_node(&self, node_id: &str) -> Result<Vec<SensorConfig>> {
         let rows = sqlx::query!(
             r#"
@@ -380,7 +380,6 @@ impl Db {
 
     /// Returns the newest moisture reading for a given zone across its sensors.
     /// (V1 simple approach: max(ts) across zone’s sensors)
-    #[allow(dead_code)] // Used by upcoming auto-watering scheduler
     pub async fn latest_zone_moisture(&self, zone_id: &str) -> Result<Option<(i64, f32)>> {
         let row = sqlx::query!(
             r#"
@@ -401,7 +400,6 @@ impl Db {
     }
 
     /// Returns a (simple) average moisture over the last N readings for a zone.
-    #[allow(dead_code)] // Used by upcoming auto-watering scheduler
     pub async fn avg_zone_moisture_last_n(&self, zone_id: &str, n: i64) -> Result<Option<f32>> {
         let row = sqlx::query!(
             r#"
