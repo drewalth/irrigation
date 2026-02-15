@@ -1,0 +1,36 @@
+[Unit]
+Description=Irrigation Hub Controller
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi
+ExecStart=/home/pi/irrigation-hub
+Restart=always
+RestartSec=5
+WatchdogSec=30
+
+# Environment
+Environment=MQTT_HOST=127.0.0.1
+Environment=MQTT_PORT=1883
+Environment=DB_URL=sqlite:/home/pi/irrigation/irrigation.db?mode=rwc
+Environment=CONFIG_PATH=/home/pi/irrigation/config.toml
+Environment=RELAY_ACTIVE_LOW=true
+Environment=WEB_PORT=8080
+Environment=RUST_LOG=info
+
+# Hardening
+ProtectSystem=strict
+ReadWritePaths=/home/pi/irrigation
+ProtectHome=read-only
+NoNewPrivileges=true
+PrivateTmp=true
+
+# GPIO access (required for valve control)
+SupplementaryGroups=gpio
+
+[Install]
+WantedBy=multi-user.target

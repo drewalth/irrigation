@@ -77,6 +77,22 @@ pub fn compute_moisture(raw: i64, raw_dry: i64, raw_wet: i64) -> f32 {
     m.clamp(0.0, 1.0) as f32
 }
 
+/// Margin beyond calibration endpoints that indicates a likely sensor failure.
+/// A disconnected ADS1115 input reads ~32767; a shorted input reads ~0.
+const SENSOR_FAILURE_MARGIN: i64 = 3000;
+
+/// Returns `true` if the raw ADC value is plausibly within calibration range.
+/// Values far outside the dry/wet endpoints suggest a disconnected, shorted,
+/// or otherwise failed sensor.
+pub fn is_reading_plausible(raw: i64, raw_dry: i64, raw_wet: i64) -> bool {
+    let (lo, hi) = if raw_wet < raw_dry {
+        (raw_wet, raw_dry)
+    } else {
+        (raw_dry, raw_wet)
+    };
+    raw >= lo - SENSOR_FAILURE_MARGIN && raw <= hi + SENSOR_FAILURE_MARGIN
+}
+
 impl Db {
     /// db_url examples:
     /// - "sqlite:/home/pi/irrigation/irrigation.db"
@@ -88,7 +104,7 @@ impl Db {
             .foreign_keys(true);
 
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
+            .max_connections(2)
             .connect_with(options)
             .await
             .with_context(|| format!("failed to connect to sqlite db: {db_url}"))?;
@@ -96,6 +112,7 @@ impl Db {
         Ok(Self { pool })
     }
 
+    #[allow(dead_code)]
     pub fn pool(&self) -> &Pool<Sqlite> {
         &self.pool
     }
@@ -276,6 +293,7 @@ impl Db {
             .collect())
     }
 
+    #[allow(dead_code)] // Used by upcoming auto-watering scheduler
     pub async fn sensors_for_node(&self, node_id: &str) -> Result<Vec<SensorConfig>> {
         let rows = sqlx::query!(
             r#"
@@ -336,7 +354,13 @@ impl Db {
     // Readings + aggregation helpers
     // ----------------------------
 
-    pub async fn insert_reading(&self, ts: i64, sensor_id: &str, raw: i64, moisture: f32) -> Result<()> {
+    pub async fn insert_reading(
+        &self,
+        ts: i64,
+        sensor_id: &str,
+        raw: i64,
+        moisture: f32,
+    ) -> Result<()> {
         let moisture_f64 = moisture as f64;
         sqlx::query!(
             r#"
@@ -356,6 +380,7 @@ impl Db {
 
     /// Returns the newest moisture reading for a given zone across its sensors.
     /// (V1 simple approach: max(ts) across zone’s sensors)
+    #[allow(dead_code)] // Used by upcoming auto-watering scheduler
     pub async fn latest_zone_moisture(&self, zone_id: &str) -> Result<Option<(i64, f32)>> {
         let row = sqlx::query!(
             r#"
@@ -376,6 +401,7 @@ impl Db {
     }
 
     /// Returns a (simple) average moisture over the last N readings for a zone.
+    #[allow(dead_code)] // Used by upcoming auto-watering scheduler
     pub async fn avg_zone_moisture_last_n(&self, zone_id: &str, n: i64) -> Result<Option<f32>> {
         let row = sqlx::query!(
             r#"
@@ -438,6 +464,23 @@ impl Db {
             .context("list_readings failed")?;
 
         Ok(rows)
+    }
+
+    /// Delete readings older than the given number of days and reclaim disk space.
+    pub async fn prune_old_readings(&self, retention_days: i64) -> Result<u64> {
+        let cutoff = OffsetDateTime::now_utc().unix_timestamp() - (retention_days * 86400);
+        let result = sqlx::query!("DELETE FROM readings WHERE ts < ?", cutoff)
+            .execute(&self.pool)
+            .await
+            .context("prune_old_readings failed")?;
+
+        // Reclaim freed pages without locking the entire DB
+        sqlx::query("PRAGMA incremental_vacuum(100)")
+            .execute(&self.pool)
+            .await
+            .context("incremental_vacuum failed")?;
+
+        Ok(result.rows_affected())
     }
 
     // ----------------------------
@@ -504,7 +547,12 @@ impl Db {
 
     pub fn today_yyyy_mm_dd() -> String {
         let now = OffsetDateTime::now_utc();
-        format!("{:04}-{:02}-{:02}", now.year(), now.month() as u8, now.day())
+        format!(
+            "{:04}-{:02}-{:02}",
+            now.year(),
+            now.month() as u8,
+            now.day()
+        )
     }
 
     pub async fn get_daily_counters(&self, day: &str, zone_id: &str) -> Result<DailyCounters> {
@@ -587,5 +635,156 @@ impl Db {
         .await
         .context("add_pulse failed")?;
         Ok(())
+    }
+
+    /// Quick connectivity check — runs a trivial query.
+    pub async fn health_check(&self) -> Result<()> {
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .context("db health check failed")?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- compute_moisture -----------------------------------------------
+
+    #[test]
+    fn compute_moisture_mid_range() {
+        let m = compute_moisture(19000, 26000, 12000);
+        assert!((m - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn compute_moisture_bone_dry() {
+        let m = compute_moisture(26000, 26000, 12000);
+        assert!((m - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn compute_moisture_saturated() {
+        let m = compute_moisture(12000, 26000, 12000);
+        assert!((m - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn compute_moisture_clamped_below() {
+        let m = compute_moisture(30000, 26000, 12000);
+        assert_eq!(m, 0.0);
+    }
+
+    #[test]
+    fn compute_moisture_clamped_above() {
+        let m = compute_moisture(5000, 26000, 12000);
+        assert_eq!(m, 1.0);
+    }
+
+    #[test]
+    fn compute_moisture_degenerate_calibration() {
+        let m = compute_moisture(20000, 15000, 15000);
+        assert_eq!(m, 0.0);
+    }
+
+    // -- is_reading_plausible -------------------------------------------
+
+    #[test]
+    fn plausible_reading_in_range() {
+        assert!(is_reading_plausible(20000, 26000, 12000));
+    }
+
+    #[test]
+    fn plausible_reading_at_dry() {
+        assert!(is_reading_plausible(26000, 26000, 12000));
+    }
+
+    #[test]
+    fn plausible_reading_at_wet() {
+        assert!(is_reading_plausible(12000, 26000, 12000));
+    }
+
+    #[test]
+    fn plausible_reading_slightly_beyond_range() {
+        // Within the margin — still plausible
+        assert!(is_reading_plausible(28000, 26000, 12000));
+        assert!(is_reading_plausible(10000, 26000, 12000));
+    }
+
+    #[test]
+    fn implausible_reading_disconnected_sensor() {
+        // ADS1115 open input reads ~32767
+        assert!(!is_reading_plausible(32767, 26000, 12000));
+    }
+
+    #[test]
+    fn implausible_reading_shorted_sensor() {
+        // Shorted to ground reads ~0
+        assert!(!is_reading_plausible(0, 26000, 12000));
+    }
+
+    #[test]
+    fn plausible_with_inverted_calibration() {
+        // Some sensors have raw_wet > raw_dry
+        assert!(is_reading_plausible(20000, 12000, 26000));
+        assert!(!is_reading_plausible(32767, 12000, 26000));
+    }
+
+    // -- prune_old_readings ---------------------------------------------
+
+    #[tokio::test]
+    async fn prune_old_readings_removes_old_data() {
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        db.migrate().await.unwrap();
+
+        // Insert a zone and sensor for FK constraints
+        db.upsert_zone(&ZoneConfig {
+            zone_id: "z1".into(),
+            name: "Test".into(),
+            min_moisture: 0.3,
+            target_moisture: 0.5,
+            pulse_sec: 30,
+            soak_min: 20,
+            max_open_sec_per_day: 180,
+            max_pulses_per_day: 6,
+            stale_timeout_min: 30,
+            valve_gpio_pin: 17,
+        })
+        .await
+        .unwrap();
+        db.upsert_sensor(&SensorConfig {
+            sensor_id: "s1".into(),
+            node_id: "n1".into(),
+            zone_id: "z1".into(),
+            raw_dry: 26000,
+            raw_wet: 12000,
+        })
+        .await
+        .unwrap();
+
+        // Insert an old reading (200 days ago) and a recent one
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let old_ts = now - (200 * 86400);
+        db.insert_reading(old_ts, "s1", 20000, 0.5).await.unwrap();
+        db.insert_reading(now, "s1", 20000, 0.5).await.unwrap();
+
+        // Prune readings older than 90 days
+        let deleted = db.prune_old_readings(90).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        // Only the recent reading should remain
+        let remaining = db.list_readings(None, None, 100, 0).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].ts, now);
+    }
+
+    // -- health_check ---------------------------------------------------
+
+    #[tokio::test]
+    async fn health_check_succeeds() {
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        db.health_check().await.unwrap();
     }
 }

@@ -179,13 +179,16 @@ cross-all: cross-hub cross-node
 
 .PHONY: deploy-hub deploy-node deploy-all
 
-## Deploy hub binary to Pi 5 via scp
+## Deploy hub binary + config to Pi 5 via scp
 deploy-hub: cross-hub
 	scp target/$(TARGET_HUB)/release/irrigation-hub $(REMOTE_USER)@$(HUB_HOST):~/irrigation-hub
+	scp config.toml $(REMOTE_USER)@$(HUB_HOST):~/irrigation/config.toml
+	scp deploy/irrigation-hub.service $(REMOTE_USER)@$(HUB_HOST):~/irrigation-hub.service
 
-## Deploy node binary to Pi Zero via scp
+## Deploy node binary + service to Pi Zero via scp
 deploy-node: cross-node
 	scp target/$(TARGET_NODE)/release/irrigation-node $(REMOTE_USER)@$(NODE_HOST):~/irrigation-node
+	scp deploy/irrigation-node.service $(REMOTE_USER)@$(NODE_HOST):~/irrigation-node.service
 
 ## Deploy both
 deploy-all: deploy-hub deploy-node

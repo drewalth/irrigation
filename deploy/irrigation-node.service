@@ -1,0 +1,33 @@
+[Unit]
+Description=Irrigation Sensor Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi
+ExecStart=/home/pi/irrigation-node
+Restart=always
+RestartSec=5
+
+# Environment
+Environment=MQTT_HOST=192.168.1.10
+Environment=MQTT_PORT=1883
+Environment=NODE_ID=node-a
+Environment=SAMPLE_EVERY_S=300
+Environment=RUST_LOG=info
+
+# Hardening
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi
+NoNewPrivileges=true
+PrivateTmp=true
+
+# I2C access (required for ADS1115 sensor)
+SupplementaryGroups=i2c
+
+[Install]
+WantedBy=multi-user.target

@@ -1,3 +1,9 @@
 [workspace]
 members = ["crates/hub", "crates/node"]
 resolver = "2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1

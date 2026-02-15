@@ -1,7 +1,9 @@
 //! Axum REST API and embedded single-page web dashboard.
 
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, Request, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json};
 use axum::routing::get;
 use axum::Router;
@@ -62,8 +64,8 @@ impl IntoResponse for ApiError {
 }
 
 fn internal(e: anyhow::Error) -> ApiError {
-    eprintln!("internal error: {e:#}");
-    ApiError::Internal(e.to_string())
+    tracing::error!("internal error: {e:#}");
+    ApiError::Internal("internal server error".to_string())
 }
 
 fn db_delete_err(e: anyhow::Error) -> ApiError {
@@ -182,12 +184,50 @@ fn validate_sensor(p: &SensorPayload) -> Result<(), ApiError> {
 }
 
 // ---------------------------------------------------------------------------
+// Auth middleware
+// ---------------------------------------------------------------------------
+
+/// Optional bearer-token gate. If API_TOKEN is set, every request to /api/*
+/// must carry `Authorization: Bearer <token>`. Requests to `/` (dashboard)
+/// and `/api/health` are exempt.
+async fn auth_layer(req: Request<Body>, next: Next) -> impl IntoResponse {
+    let path = req.uri().path().to_string();
+
+    // Always allow health check and dashboard
+    if path == "/" || path == "/api/health" {
+        return next.run(req).await;
+    }
+
+    // If no token configured, allow everything (dev mode)
+    let expected = match env::var("API_TOKEN") {
+        Ok(t) if !t.is_empty() => t,
+        _ => return next.run(req).await,
+    };
+
+    // Check Authorization header
+    if let Some(auth) = req.headers().get("authorization") {
+        if let Ok(val) = auth.to_str() {
+            if val.strip_prefix("Bearer ").map(|t| t.trim()) == Some(expected.as_str()) {
+                return next.run(req).await;
+            }
+        }
+    }
+
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({"error": "unauthorized", "message": "invalid or missing bearer token"})),
+    )
+        .into_response()
+}
+
+// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/api/health", get(api_health))
         .route("/api/status", get(api_status))
         // Zones
         .route("/api/zones", get(api_zones))
@@ -209,6 +249,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/readings", get(api_readings))
         .route("/api/watering-events", get(api_watering_events))
         .route("/api/counters/{zone_id}", get(api_counters))
+        .layer(middleware::from_fn(auth_layer))
         .with_state(state)
 }
 
@@ -228,13 +269,35 @@ async fn api_status(State(state): State<AppState>) -> impl IntoResponse {
     Json(st.to_status())
 }
 
+async fn api_health(State(state): State<AppState>) -> impl IntoResponse {
+    let st = state.shared.read().await;
+    let mqtt_ok = st.mqtt_connected;
+    drop(st);
+
+    let db_ok = state.db.health_check().await.is_ok();
+
+    let healthy = mqtt_ok && db_ok;
+    let status = if healthy {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (
+        status,
+        Json(serde_json::json!({
+            "status": if healthy { "healthy" } else { "degraded" },
+            "mqtt_connected": mqtt_ok,
+            "db_connected": db_ok,
+        })),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Handlers — zones
 // ---------------------------------------------------------------------------
 
-async fn api_zones(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<ZoneConfig>>, ApiError> {
+async fn api_zones(State(state): State<AppState>) -> Result<Json<Vec<ZoneConfig>>, ApiError> {
     state.db.load_zones().await.map(Json).map_err(internal)
 }
 
@@ -288,9 +351,7 @@ async fn api_delete_zone(
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(ApiError::NotFound(format!(
-            "zone '{zone_id}' not found"
-        )))
+        Err(ApiError::NotFound(format!("zone '{zone_id}' not found")))
     }
 }
 
@@ -298,9 +359,7 @@ async fn api_delete_zone(
 // Handlers — sensors
 // ---------------------------------------------------------------------------
 
-async fn api_sensors(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<SensorConfig>>, ApiError> {
+async fn api_sensors(State(state): State<AppState>) -> Result<Json<Vec<SensorConfig>>, ApiError> {
     state.db.load_sensors().await.map(Json).map_err(internal)
 }
 
@@ -436,16 +495,20 @@ pub async fn serve(shared: SharedState, db: Db) {
         .unwrap_or(8080);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = TcpListener::bind(addr)
-        .await
-        .expect("failed to bind web port");
+    let listener = match TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!("failed to bind web port {addr}: {e}");
+            return;
+        }
+    };
 
-    eprintln!("web ui listening on http://{addr}");
+    tracing::info!("web ui listening on http://{addr}");
 
     let state = AppState { shared, db };
-    axum::serve(listener, router(state))
-        .await
-        .expect("web server error");
+    if let Err(e) = axum::serve(listener, router(state)).await {
+        tracing::error!("web server error: {e}");
+    }
 }
 
 // ===========================================================================
@@ -562,6 +625,19 @@ mod tests {
         assert!(json["events"].is_array());
         assert!(json["zones"]["zone1"].is_object());
         assert!(json["zones"]["zone2"].is_object());
+    }
+
+    #[tokio::test]
+    async fn api_health_returns_json() {
+        let app = router(test_state().await);
+        let resp = app.oneshot(get_req("/api/health")).await.unwrap();
+        // DB is connected but MQTT is not, so expect 503
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["status"], "degraded");
+        assert_eq!(json["db_connected"], true);
+        assert_eq!(json["mqtt_connected"], false);
     }
 
     #[tokio::test]
@@ -733,10 +809,7 @@ mod tests {
         bad["min_moisture"] = serde_json::json!(1.5);
         bad["target_moisture"] = serde_json::json!(-0.1);
 
-        let resp = app
-            .oneshot(put_json("/api/zones/z1", bad))
-            .await
-            .unwrap();
+        let resp = app.oneshot(put_json("/api/zones/z1", bad)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
         let json = body_json(resp).await;
@@ -752,10 +825,7 @@ mod tests {
         bad["min_moisture"] = serde_json::json!(0.6);
         bad["target_moisture"] = serde_json::json!(0.3);
 
-        let resp = app
-            .oneshot(put_json("/api/zones/z1", bad))
-            .await
-            .unwrap();
+        let resp = app.oneshot(put_json("/api/zones/z1", bad)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
@@ -765,10 +835,7 @@ mod tests {
         let mut bad = sample_zone_json();
         bad["name"] = serde_json::json!("");
 
-        let resp = app
-            .oneshot(put_json("/api/zones/z1", bad))
-            .await
-            .unwrap();
+        let resp = app.oneshot(put_json("/api/zones/z1", bad)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
@@ -778,10 +845,7 @@ mod tests {
         let mut bad = sample_zone_json();
         bad["pulse_sec"] = serde_json::json!(-1);
 
-        let resp = app
-            .oneshot(put_json("/api/zones/z1", bad))
-            .await
-            .unwrap();
+        let resp = app.oneshot(put_json("/api/zones/z1", bad)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
@@ -884,10 +948,7 @@ mod tests {
     #[tokio::test]
     async fn delete_sensor_missing_returns_404() {
         let app = router(test_state().await);
-        let resp = app
-            .oneshot(delete_req("/api/sensors/nope"))
-            .await
-            .unwrap();
+        let resp = app.oneshot(delete_req("/api/sensors/nope")).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
@@ -928,10 +989,7 @@ mod tests {
             "raw_dry": 20000,
             "raw_wet": 20000
         });
-        let resp = app
-            .oneshot(put_json("/api/sensors/s1", bad))
-            .await
-            .unwrap();
+        let resp = app.oneshot(put_json("/api/sensors/s1", bad)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
@@ -949,10 +1007,7 @@ mod tests {
             "raw_dry": 30000,
             "raw_wet": 10000
         });
-        let resp = app
-            .oneshot(put_json("/api/sensors/s1", bad))
-            .await
-            .unwrap();
+        let resp = app.oneshot(put_json("/api/sensors/s1", bad)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
@@ -1056,10 +1111,7 @@ mod tests {
     #[tokio::test]
     async fn watering_events_empty_returns_empty_array() {
         let app = router(test_state().await);
-        let resp = app
-            .oneshot(get_req("/api/watering-events"))
-            .await
-            .unwrap();
+        let resp = app.oneshot(get_req("/api/watering-events")).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
         let json = body_json(resp).await;
@@ -1180,11 +1232,7 @@ mod tests {
             })
             .await
             .unwrap();
-        state
-            .db
-            .add_pulse("2025-06-01", "z1", 1)
-            .await
-            .unwrap();
+        state.db.add_pulse("2025-06-01", "z1", 1).await.unwrap();
         state
             .db
             .add_open_seconds("2025-06-01", "z1", 30)

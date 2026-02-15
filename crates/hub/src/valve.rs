@@ -1,8 +1,9 @@
 //! Valve control via GPIO. The `gpio` feature gates the real rppal driver;
-//! without it, a mock implementation logs state changes to stderr.
+//! without it, a mock implementation logs state changes.
 
 use anyhow::Result;
 use std::collections::HashMap;
+use tracing::{info, warn};
 
 #[cfg(feature = "gpio")]
 use rppal::gpio::{Gpio, OutputPin};
@@ -41,23 +42,21 @@ impl ValveBoard {
     pub(crate) fn set(&mut self, zone_id: &str, on: bool) {
         if let Some(pin) = self.pins.get_mut(zone_id) {
             if self.active_low {
-                // active-low relay: LOW = ON, HIGH = OFF
                 if on {
                     pin.set_low()
                 } else {
                     pin.set_high()
                 }
             } else {
-                // active-high relay: HIGH = ON, LOW = OFF
                 if on {
                     pin.set_high()
                 } else {
                     pin.set_low()
                 }
             }
-            eprintln!("valve zone={zone_id} set {}", if on { "ON" } else { "OFF" });
+            info!(zone = %zone_id, state = if on { "ON" } else { "OFF" }, "valve set");
         } else {
-            eprintln!("unknown zone_id '{zone_id}'");
+            warn!(zone = %zone_id, "unknown zone_id");
         }
     }
 
@@ -69,8 +68,16 @@ impl ValveBoard {
     }
 }
 
+#[cfg(feature = "gpio")]
+impl Drop for ValveBoard {
+    fn drop(&mut self) {
+        // Safety net: ensure all relays are de-energized when dropped.
+        self.all_off();
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Mock valve board (development — no hardware, logs state to stderr)
+// Mock valve board (development — no hardware, logs state)
 // ---------------------------------------------------------------------------
 #[cfg(not(feature = "gpio"))]
 pub(crate) struct ValveBoard {
@@ -82,22 +89,23 @@ impl ValveBoard {
     pub(crate) fn new(zone_to_gpio: &[(String, u8)], _active_low: bool) -> Result<Self> {
         let mut zones = HashMap::new();
         for (zone_id, pin_num) in zone_to_gpio {
-            eprintln!("[mock-gpio] registered zone={zone_id} (gpio {pin_num} — not wired)");
+            info!(zone = %zone_id, gpio = pin_num, "[mock] registered zone (not wired)");
             zones.insert(zone_id.clone(), false);
         }
-        eprintln!("[mock-gpio] valve board initialised (no hardware)");
+        info!("[mock] valve board initialised (no hardware)");
         Ok(Self { zones })
     }
 
     pub(crate) fn set(&mut self, zone_id: &str, on: bool) {
         if let Some(state) = self.zones.get_mut(zone_id) {
             *state = on;
-            eprintln!(
-                "[mock-gpio] valve zone={zone_id} set {}",
-                if on { "ON" } else { "OFF" }
+            info!(
+                zone = %zone_id,
+                state = if on { "ON" } else { "OFF" },
+                "[mock] valve set"
             );
         } else {
-            eprintln!("[mock-gpio] unknown zone_id '{zone_id}'");
+            warn!(zone = %zone_id, "[mock] unknown zone_id");
         }
     }
 
@@ -106,6 +114,13 @@ impl ValveBoard {
         for k in keys {
             self.set(&k, false);
         }
+    }
+}
+
+#[cfg(not(feature = "gpio"))]
+impl Drop for ValveBoard {
+    fn drop(&mut self) {
+        self.all_off();
     }
 }
 
@@ -167,5 +182,15 @@ mod tests {
         let mut board = ValveBoard::new(&zones, true).unwrap();
         board.set("nonexistent", true); // should not panic
         assert_eq!(board.zones.len(), 1); // no new entry created
+    }
+
+    #[test]
+    fn valve_board_drop_turns_off() {
+        let zones = vec![("z1".to_string(), 17)];
+        let mut board = ValveBoard::new(&zones, true).unwrap();
+        board.set("z1", true);
+        assert!(board.zones["z1"]);
+        drop(board);
+        // Can't check state after drop, but at least it doesn't panic
     }
 }

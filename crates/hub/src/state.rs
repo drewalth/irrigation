@@ -149,6 +149,17 @@ impl SystemState {
         self.push_event(EventKind::System, detail);
     }
 
+    /// Force all zone states to OFF (used during emergency shutdowns / MQTT errors).
+    pub fn set_all_zones_off(&mut self) {
+        let now = Utc::now();
+        for zone in self.zones.values_mut() {
+            if zone.on {
+                zone.on = false;
+                zone.last_changed = Some(now);
+            }
+        }
+    }
+
     /// Build the JSON-serialisable status snapshot.
     pub fn to_status(&self) -> StatusResponse {
         StatusResponse {
@@ -398,6 +409,41 @@ mod tests {
             st.events.back().unwrap().detail,
             format!("event {}", MAX_EVENTS + 9)
         );
+    }
+
+    // -- to_status ----------------------------------------------------------
+
+    // -- set_all_zones_off ---------------------------------------------------
+
+    #[test]
+    fn set_all_zones_off_turns_all_zones_off() {
+        let mut st = two_zone_state();
+        st.record_valve("zone1", true);
+        st.record_valve("zone2", true);
+        assert!(st.zones["zone1"].on);
+        assert!(st.zones["zone2"].on);
+
+        st.set_all_zones_off();
+        assert!(!st.zones["zone1"].on);
+        assert!(!st.zones["zone2"].on);
+    }
+
+    #[test]
+    fn set_all_zones_off_sets_last_changed() {
+        let mut st = two_zone_state();
+        st.record_valve("zone1", true);
+        st.set_all_zones_off();
+        assert!(st.zones["zone1"].last_changed.is_some());
+    }
+
+    #[test]
+    fn set_all_zones_off_noop_when_already_off() {
+        let mut st = two_zone_state();
+        // Zones start off, last_changed is None
+        st.set_all_zones_off();
+        // last_changed should still be None since zones were already off
+        assert!(st.zones["zone1"].last_changed.is_none());
+        assert!(st.zones["zone2"].last_changed.is_none());
     }
 
     // -- to_status ----------------------------------------------------------

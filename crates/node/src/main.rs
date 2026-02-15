@@ -1,7 +1,6 @@
 //! Sensor node: periodically publishes soil moisture readings over MQTT.
 //! Currently uses fake data; real ADS1115 integration is on the roadmap.
 
-use rand::Rng;
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use serde::Serialize;
 use std::{env, time::Duration};
@@ -23,12 +22,19 @@ fn now_unix() -> i64 {
     // Good enough for v1; you can switch to time::OffsetDateTime later
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .expect("system clock before epoch")
         .as_secs() as i64
 }
 
-#[tokio::main]
-async fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
+    // Structured logging
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
+
     // Env config
     let broker = env::var("MQTT_HOST").unwrap_or_else(|_| "192.168.1.10".to_string());
     let port: u16 = env::var("MQTT_PORT")
@@ -54,11 +60,11 @@ async fn main() {
         loop {
             match eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
-                    eprintln!("node connected to mqtt");
+                    tracing::info!("node connected to mqtt");
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    eprintln!("mqtt error: {e}. retrying...");
+                    tracing::error!("mqtt error: {e} — retrying");
                     sleep(Duration::from_secs(2)).await;
                 }
             }
@@ -66,13 +72,12 @@ async fn main() {
     });
 
     let topic = format!("tele/{}/reading", node_id);
-    eprintln!("publishing to topic: {topic}");
+    tracing::info!(topic = %topic, "publishing sensor readings");
 
     loop {
         // Fake sensor raw values for now: replace with ADS1115 reads later
-        let mut rng = rand::thread_rng();
-        let r1 = rng.gen_range(17000..26000);
-        let r2 = rng.gen_range(17000..26000);
+        let r1 = fastrand::i32(17000..26000);
+        let r2 = fastrand::i32(17000..26000);
 
         let msg = ReadingMsg {
             ts: now_unix(),
@@ -88,15 +93,15 @@ async fn main() {
             ],
         };
 
-        let payload = serde_json::to_vec(&msg).unwrap();
+        let payload = serde_json::to_vec(&msg).expect("reading serialization failed");
 
         if let Err(e) = client
             .publish(&topic, QoS::AtLeastOnce, false, payload)
             .await
         {
-            eprintln!("publish error: {e}");
+            tracing::error!("publish error: {e}");
         } else {
-            eprintln!("published readings ts={}", msg.ts);
+            tracing::info!(ts = msg.ts, "published readings");
         }
 
         sleep(Duration::from_secs(sample_every_s)).await;
