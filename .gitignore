@@ -24,3 +24,4 @@ Thumbs.db
 
 # Debug
 *.pdb
+.cursor/plans/
