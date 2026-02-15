@@ -168,6 +168,10 @@ test-node:
 cross-hub: build-ui
 	cross build -p irrigation-hub --release --features gpio --target $(TARGET_HUB)
 
+## Cross-compile hub for Pi 5 with GPIO + native TLS
+cross-hub-tls: build-ui
+	cross build -p irrigation-hub --release --features gpio,tls --target $(TARGET_HUB)
+
 ## Cross-compile node for Pi Zero W (armv6 / armhf)
 cross-node:
 	cross build -p irrigation-node --release --target $(TARGET_NODE)

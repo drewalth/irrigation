@@ -9,7 +9,7 @@ use axum::routing::get;
 use axum::Router;
 use serde::Deserialize;
 use std::env;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use tokio::net::TcpListener;
 
 use crate::db::{Db, SensorConfig, ZoneConfig};
@@ -494,7 +494,60 @@ pub async fn serve(shared: SharedState, db: Db) {
         .and_then(|s| s.parse().ok())
         .unwrap_or(8080);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let bind: IpAddr = env::var("WEB_BIND")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| IpAddr::from([127, 0, 0, 1]));
+
+    let addr = SocketAddr::new(bind, port);
+    let state = AppState { shared, db };
+    let app = router(state);
+
+    let tls_cert = env::var("TLS_CERT").ok().filter(|s| !s.is_empty());
+    let tls_key = env::var("TLS_KEY").ok().filter(|s| !s.is_empty());
+
+    match (&tls_cert, &tls_key) {
+        (Some(_), None) | (None, Some(_)) => {
+            tracing::error!(
+                "both TLS_CERT and TLS_KEY must be set for HTTPS (only one was provided)"
+            );
+        }
+        (Some(_), Some(_)) => {
+            #[cfg(feature = "tls")]
+            {
+                serve_https(
+                    addr,
+                    app,
+                    tls_cert.as_deref().unwrap(),
+                    tls_key.as_deref().unwrap(),
+                )
+                .await;
+            }
+            #[cfg(not(feature = "tls"))]
+            {
+                tracing::error!(
+                    "TLS_CERT and TLS_KEY are set but the 'tls' feature is not enabled — \
+                     rebuild with `--features tls` or remove TLS_CERT/TLS_KEY to use plain HTTP"
+                );
+            }
+        }
+        (None, None) => {
+            serve_http(addr, app).await;
+        }
+    }
+}
+
+/// Serve plain HTTP. Warns loudly if binding to a non-loopback address,
+/// because `API_TOKEN` would be sent in cleartext.
+async fn serve_http(addr: SocketAddr, app: Router) {
+    if !addr.ip().is_loopback() {
+        tracing::warn!(
+            %addr,
+            "binding WITHOUT TLS on a non-loopback address — API_TOKEN sent in cleartext! \
+             Set TLS_CERT + TLS_KEY for HTTPS, or bind to 127.0.0.1 behind a reverse proxy."
+        );
+    }
+
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
@@ -505,8 +558,30 @@ pub async fn serve(shared: SharedState, db: Db) {
 
     tracing::info!("web ui listening on http://{addr}");
 
-    let state = AppState { shared, db };
-    if let Err(e) = axum::serve(listener, router(state)).await {
+    if let Err(e) = axum::serve(listener, app).await {
+        tracing::error!("web server error: {e}");
+    }
+}
+
+/// Serve HTTPS using `axum-server` with `rustls`.
+#[cfg(feature = "tls")]
+async fn serve_https(addr: SocketAddr, app: Router, cert_path: &str, key_path: &str) {
+    use axum_server::tls_rustls::RustlsConfig;
+
+    let config = match RustlsConfig::from_pem_file(cert_path, key_path).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(cert = %cert_path, key = %key_path, "failed to load TLS cert/key: {e}");
+            return;
+        }
+    };
+
+    tracing::info!("web ui listening on https://{addr}");
+
+    if let Err(e) = axum_server::bind_rustls(addr, config)
+        .serve(app.into_make_service())
+        .await
+    {
         tracing::error!("web server error: {e}");
     }
 }

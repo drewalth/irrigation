@@ -17,15 +17,23 @@ mod state;
 mod valve;
 mod web;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS};
-use std::{collections::HashMap, env, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    sync::Arc,
+    time::Duration,
+};
+use time::OffsetDateTime;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::Instant;
 use tracing::{error, info, warn};
 
 use db::{compute_moisture, is_reading_plausible, Db, SensorConfig, ZoneConfig};
-use mqtt::{extract_node_id, extract_zone_id, parse_valve_command, ReadingMsg};
+use mqtt::{
+    extract_node_id, extract_node_status_id, extract_zone_id, parse_valve_command, ReadingMsg,
+};
 use state::{SensorReading, SystemState};
 use valve::ValveBoard;
 
@@ -40,6 +48,20 @@ const PRUNE_INTERVAL_SEC: u64 = 6 * 3600;
 
 /// Default data retention period in days.
 const RETENTION_DAYS: i64 = 90;
+
+/// Grace period (seconds) for MQTT errors before triggering emergency valve
+/// shutdown.  During this window the hub logs warnings but does not interrupt
+/// active watering sessions.  The valve watchdog still independently enforces
+/// max-open-time safety regardless of MQTT state.
+const MQTT_GRACE_PERIOD_SEC: u64 = 60;
+
+/// How often the heartbeat monitor checks for stale nodes (seconds).
+const HEARTBEAT_CHECK_INTERVAL_SEC: u64 = 60;
+
+/// Default threshold (in minutes) after which a node is considered stale if no
+/// telemetry has been received.  Override with `NODE_STALE_TIMEOUT_MIN` env var.
+/// Should be roughly 2× the node sampling interval (default 300s = 5 min).
+const DEFAULT_NODE_STALE_TIMEOUT_MIN: i64 = 10;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -57,8 +79,23 @@ async fn main() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1883);
     let db_url = env::var("DB_URL").unwrap_or_else(|_| "sqlite:irrigation.db?mode=rwc".to_string());
+    let db_backup_path = env::var("DB_BACKUP_PATH").ok().filter(|s| !s.is_empty());
+    let db_backup_interval: u64 = env::var("DB_BACKUP_INTERVAL_SEC")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1800);
 
     // ── Database ────────────────────────────────────────────────────
+    // When using tmpfs the database file is lost on reboot.  Restore
+    // from the persistent backup (if one exists) before connecting.
+    if let (Some(working_path), Some(ref backup)) = (db::db_file_path(&db_url), &db_backup_path) {
+        match db::restore_from_backup(&working_path, backup) {
+            Ok(true) => info!(backup = %backup, "database restored from backup"),
+            Ok(false) => {}
+            Err(e) => warn!("backup restore failed (starting fresh): {e:#}"),
+        }
+    }
+
     let db = Db::connect(&db_url).await?;
     db.migrate().await?;
 
@@ -66,6 +103,7 @@ async fn main() -> Result<()> {
     let config_path = env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
     let cfg = config::load(&config_path)?;
     config::apply(&cfg, &db).await?;
+    let max_concurrent_valves = cfg.max_concurrent_valves;
 
     // Load zone config from DB — this is the source of truth.
     let zones = db.load_zones().await?;
@@ -76,8 +114,16 @@ async fn main() -> Result<()> {
     // Derive zone->GPIO mapping from persisted zone config.
     let zone_to_gpio: Vec<(String, u8)> = zones
         .iter()
-        .map(|z| (z.zone_id.clone(), z.valve_gpio_pin as u8))
-        .collect();
+        .map(|z| {
+            let pin: u8 = z.valve_gpio_pin.try_into().with_context(|| {
+                format!(
+                    "zone '{}': valve_gpio_pin {} out of u8 range",
+                    z.zone_id, z.valve_gpio_pin
+                )
+            })?;
+            Ok((z.zone_id.clone(), pin))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     // Build zone config lookup for safety limit enforcement + watchdog.
     let zone_configs: HashMap<String, ZoneConfig> =
@@ -119,12 +165,12 @@ async fn main() -> Result<()> {
     // ── Web server ──────────────────────────────────────────────────
     let web_state = Arc::clone(&shared);
     let web_db = db.clone();
-    tokio::spawn(async move {
+    let mut web_handle = tokio::spawn(async move {
         web::serve(web_state, web_db).await;
     });
 
     // ── Valve watchdog ──────────────────────────────────────────────
-    {
+    let mut watchdog_handle = {
         let wd_valves = Arc::clone(&valves);
         let wd_opened = Arc::clone(&valve_opened_at);
         let wd_shared = Arc::clone(&shared);
@@ -180,11 +226,11 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-        });
-    }
+        })
+    };
 
     // ── Data retention pruning ──────────────────────────────────────
-    {
+    let mut prune_handle = {
         let prune_db = db.clone();
         tokio::spawn(async move {
             // Don't prune immediately on startup — wait a bit first.
@@ -199,8 +245,38 @@ async fn main() -> Result<()> {
                     Err(e) => error!("data retention prune failed: {e:#}"),
                 }
             }
-        });
-    }
+        })
+    };
+
+    // ── Periodic database backup (SD card wear mitigation) ──────────
+    let mut backup_handle = {
+        let backup_db = db.clone();
+        let backup_dest = db_backup_path.clone();
+        tokio::spawn(async move {
+            let Some(dest) = backup_dest else {
+                // No backup path configured — park this task forever.
+                std::future::pending::<()>().await;
+                return;
+            };
+            info!(
+                path = %dest,
+                interval_sec = db_backup_interval,
+                "database backup task started"
+            );
+
+            // Delay first backup to avoid startup I/O contention.
+            tokio::time::sleep(Duration::from_secs(120)).await;
+
+            let mut ticker = tokio::time::interval(Duration::from_secs(db_backup_interval));
+            loop {
+                ticker.tick().await;
+                match backup_db.backup(&dest).await {
+                    Ok(()) => info!(path = %dest, "database backup complete"),
+                    Err(e) => error!("database backup failed: {e:#}"),
+                }
+            }
+        })
+    };
 
     // ── MQTT ────────────────────────────────────────────────────────
     let client_id = "irrigation-hub";
@@ -214,23 +290,106 @@ async fn main() -> Result<()> {
         true,
     ));
 
+    // MQTT authentication — required for production (see deploy/mosquitto-production.conf).
+    if let (Ok(user), Ok(pass)) = (env::var("MQTT_USER"), env::var("MQTT_PASS")) {
+        mqttoptions.set_credentials(user, pass);
+        info!("mqtt: using password authentication");
+    } else {
+        warn!("MQTT_USER / MQTT_PASS not set — connecting without authentication");
+    }
+
     let (client, mut eventloop) = AsyncClient::new(mqttoptions, 20);
 
     // Initial subscriptions (re-issued on every reconnect in ConnAck handler).
     client.subscribe("tele/+/reading", QoS::AtLeastOnce).await?;
     client.subscribe("valve/+/set", QoS::AtLeastOnce).await?;
-    info!("subscribed to tele/+/reading and valve/+/set");
+    client.subscribe("status/node/+", QoS::AtLeastOnce).await?;
+    info!("subscribed to tele/+/reading, valve/+/set, status/node/+");
 
     // ── Auto-watering scheduler ─────────────────────────────────────
-    {
+    let mut scheduler_handle = {
         let sched_db = db.clone();
         let sched_configs = zone_configs.clone();
         let sched_mqtt = client.clone();
         let sched_shared = Arc::clone(&shared);
         tokio::spawn(async move {
-            scheduler::run(sched_db, sched_configs, sched_mqtt, sched_shared).await;
-        });
-    }
+            scheduler::run(
+                sched_db,
+                sched_configs,
+                sched_mqtt,
+                sched_shared,
+                max_concurrent_valves,
+            )
+            .await;
+        })
+    };
+
+    // ── Node heartbeat monitor ─────────────────────────────────────
+    let mut heartbeat_handle = {
+        let hb_shared = Arc::clone(&shared);
+        tokio::spawn(async move {
+            let stale_timeout_min: i64 = env::var("NODE_STALE_TIMEOUT_MIN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_NODE_STALE_TIMEOUT_MIN);
+
+            let stale_threshold = time::Duration::minutes(stale_timeout_min);
+
+            info!(stale_timeout_min, "node heartbeat monitor started");
+
+            // Wait before first check to let nodes connect and send initial data.
+            tokio::time::sleep(Duration::from_secs(120)).await;
+
+            let mut warned_stale: HashSet<String> = HashSet::new();
+            let mut ticker =
+                tokio::time::interval(Duration::from_secs(HEARTBEAT_CHECK_INTERVAL_SEC));
+
+            loop {
+                ticker.tick().await;
+
+                let st = hb_shared.read().await;
+                let now = OffsetDateTime::now_utc();
+
+                let mut newly_stale: Vec<(String, i64)> = Vec::new();
+                let mut recovered: Vec<String> = Vec::new();
+
+                for (node_id, node) in &st.nodes {
+                    let elapsed = now - node.last_seen;
+                    let is_stale = elapsed > stale_threshold;
+
+                    if is_stale && !warned_stale.contains(node_id) {
+                        newly_stale.push((node_id.clone(), elapsed.whole_minutes()));
+                    } else if !is_stale && warned_stale.contains(node_id) {
+                        recovered.push(node_id.clone());
+                    }
+                }
+
+                drop(st);
+
+                if newly_stale.is_empty() && recovered.is_empty() {
+                    continue;
+                }
+
+                let mut st = hb_shared.write().await;
+
+                for (node_id, mins) in &newly_stale {
+                    warn!(
+                        node = %node_id,
+                        last_seen_min_ago = mins,
+                        "node is stale — no data received"
+                    );
+                    st.record_error(format!("node {node_id} stale — last seen {mins} min ago"));
+                    warned_stale.insert(node_id.clone());
+                }
+
+                for node_id in &recovered {
+                    info!(node = %node_id, "stale node recovered");
+                    st.record_system(format!("node {node_id} recovered from stale state"));
+                    warned_stale.remove(node_id);
+                }
+            }
+        })
+    };
 
     // ── Signal handling ─────────────────────────────────────────────
     let ctrl_c = tokio::signal::ctrl_c();
@@ -241,88 +400,243 @@ async fn main() -> Result<()> {
     // ── Main event loop ─────────────────────────────────────────────
     let exit_reason: &str;
 
+    // MQTT error grace period tracking (audit item #15).  Transient network
+    // hiccups should not kill active watering sessions.
+    let mut mqtt_first_error_at: Option<Instant> = None;
+    let mut mqtt_error_count: u32 = 0;
+
     loop {
         tokio::select! {
             event = eventloop.poll() => {
                 match event {
-                    Ok(Event::Incoming(Packet::Publish(p))) => {
-                        let topic = p.topic.clone();
-                        let payload = p.payload.to_vec();
-
-                        if let Some(node_id) = extract_node_id(&topic) {
-                            handle_telemetry(
-                                node_id,
-                                &payload,
-                                &sensor_map,
-                                &db,
-                                &shared,
-                            )
-                            .await;
-                        } else if let Some(zone_id) = extract_zone_id(&topic) {
-                            handle_valve_command(
-                                zone_id,
-                                &payload,
-                                &zone_configs,
-                                &valves,
-                                &valve_opened_at,
-                                &db,
-                                &shared,
-                            )
-                            .await;
-                        } else {
-                            warn!(topic = %topic, "unhandled topic");
-                        }
-                    }
-
-                    Ok(Event::Incoming(Packet::ConnAck(_))) => {
-                        info!("mqtt connected");
-
-                        // Re-subscribe on every (re)connect — broker may have
-                        // lost our session even with clean_session(false).
-                        if let Err(e) = client
-                            .subscribe("tele/+/reading", QoS::AtLeastOnce)
-                            .await
+                    Ok(ev) => {
+                        // Any incoming packet (except Disconnect) proves the
+                        // broker is talking to us — clear the error streak.
+                        let is_incoming = matches!(&ev, Event::Incoming(_));
+                        let is_disconnect =
+                            matches!(&ev, Event::Incoming(Packet::Disconnect));
+                        if is_incoming
+                            && !is_disconnect
+                            && mqtt_first_error_at.is_some()
                         {
-                            error!("re-subscribe tele/+/reading failed: {e}");
+                            info!(
+                                recovered_after_errors = mqtt_error_count,
+                                "mqtt connection recovered — error streak cleared"
+                            );
+                            mqtt_first_error_at = None;
+                            mqtt_error_count = 0;
                         }
-                        if let Err(e) = client
-                            .subscribe("valve/+/set", QoS::AtLeastOnce)
-                            .await
-                        {
-                            error!("re-subscribe valve/+/set failed: {e}");
+
+                        match ev {
+                            Event::Incoming(Packet::Publish(p)) => {
+                                let topic = p.topic.clone();
+                                let payload = p.payload.to_vec();
+
+                                if let Some(node_id) = extract_node_id(&topic) {
+                                    handle_telemetry(
+                                        node_id,
+                                        &payload,
+                                        &sensor_map,
+                                        &db,
+                                        &shared,
+                                    )
+                                    .await;
+                                } else if let Some(zone_id) =
+                                    extract_zone_id(&topic)
+                                {
+                                    handle_valve_command(
+                                        zone_id,
+                                        &payload,
+                                        &zone_configs,
+                                        &valves,
+                                        &valve_opened_at,
+                                        &db,
+                                        &shared,
+                                        max_concurrent_valves,
+                                    )
+                                    .await;
+                                } else if let Some(node_id) =
+                                    extract_node_status_id(&topic)
+                                {
+                                    handle_node_status(
+                                        node_id, &payload, &shared,
+                                    )
+                                    .await;
+                                } else {
+                                    warn!(topic = %topic, "unhandled topic");
+                                }
+                            }
+
+                            Event::Incoming(Packet::ConnAck(_)) => {
+                                info!("mqtt connected");
+
+                                // Re-subscribe on every (re)connect — broker
+                                // may have lost our session even with
+                                // clean_session(false).
+                                if let Err(e) = client
+                                    .subscribe(
+                                        "tele/+/reading",
+                                        QoS::AtLeastOnce,
+                                    )
+                                    .await
+                                {
+                                    error!(
+                                        "re-subscribe tele/+/reading failed: {e}"
+                                    );
+                                }
+                                if let Err(e) = client
+                                    .subscribe(
+                                        "valve/+/set",
+                                        QoS::AtLeastOnce,
+                                    )
+                                    .await
+                                {
+                                    error!(
+                                        "re-subscribe valve/+/set failed: {e}"
+                                    );
+                                }
+                                if let Err(e) = client
+                                    .subscribe(
+                                        "status/node/+",
+                                        QoS::AtLeastOnce,
+                                    )
+                                    .await
+                                {
+                                    error!(
+                                        "re-subscribe status/node/+ failed: {e}"
+                                    );
+                                }
+
+                                // Announce online status (retained)
+                                let _ = client
+                                    .publish(
+                                        "status/hub",
+                                        QoS::AtLeastOnce,
+                                        true,
+                                        b"online".to_vec(),
+                                    )
+                                    .await;
+
+                                let mut st = shared.write().await;
+                                st.mqtt_connected = true;
+                                st.record_system("mqtt connected".to_string());
+                            }
+
+                            Event::Incoming(Packet::Disconnect) => {
+                                warn!("mqtt disconnected");
+                                let mut st = shared.write().await;
+                                st.mqtt_connected = false;
+                                st.record_system(
+                                    "mqtt disconnected".to_string(),
+                                );
+                            }
+
+                            _ => {}
                         }
-
-                        // Announce online status (retained)
-                        let _ = client
-                            .publish("status/hub", QoS::AtLeastOnce, true, b"online".to_vec())
-                            .await;
-
-                        let mut st = shared.write().await;
-                        st.mqtt_connected = true;
-                        st.record_system("mqtt connected".to_string());
                     }
-
-                    Ok(Event::Incoming(Packet::Disconnect)) => {
-                        warn!("mqtt disconnected");
-                        let mut st = shared.write().await;
-                        st.mqtt_connected = false;
-                        st.record_system("mqtt disconnected".to_string());
-                    }
-
-                    Ok(_) => {}
 
                     Err(e) => {
-                        error!("mqtt error: {e} — turning all valves off");
-                        emergency_all_off(
-                            &valves,
-                            &valve_opened_at,
-                            &shared,
-                            &format!("mqtt error: {e}"),
-                        )
-                        .await;
+                        mqtt_error_count += 1;
+                        let first_err =
+                            *mqtt_first_error_at.get_or_insert_with(Instant::now);
+                        let error_duration = first_err.elapsed();
+
+                        // Mark MQTT disconnected on first error in a streak.
+                        {
+                            let mut st = shared.write().await;
+                            if st.mqtt_connected {
+                                st.mqtt_connected = false;
+                                st.record_system(format!("mqtt error: {e}"));
+                            }
+                        }
+
+                        // Only kill valves if they're open AND the grace period
+                        // has expired.  The valve watchdog independently enforces
+                        // max-open-time safety regardless of MQTT state.
+                        let has_open_valves = {
+                            let st = shared.read().await;
+                            st.zones.values().any(|z| z.on)
+                        };
+
+                        if has_open_valves
+                            && error_duration
+                                >= Duration::from_secs(MQTT_GRACE_PERIOD_SEC)
+                        {
+                            error!(
+                                consecutive_errors = mqtt_error_count,
+                                elapsed_secs = error_duration.as_secs(),
+                                "mqtt grace period expired with open valves \
+                                 — emergency all-off"
+                            );
+                            emergency_all_off(
+                                &valves,
+                                &valve_opened_at,
+                                &shared,
+                                &format!(
+                                    "mqtt error: {e} ({}s grace period expired, \
+                                     {} consecutive errors)",
+                                    MQTT_GRACE_PERIOD_SEC, mqtt_error_count
+                                ),
+                            )
+                            .await;
+                            // Reset — we already shut everything down.
+                            mqtt_first_error_at = None;
+                            mqtt_error_count = 0;
+                        } else if has_open_valves {
+                            let remaining = MQTT_GRACE_PERIOD_SEC
+                                .saturating_sub(error_duration.as_secs());
+                            warn!(
+                                consecutive_errors = mqtt_error_count,
+                                elapsed_secs = error_duration.as_secs(),
+                                grace_remaining_secs = remaining,
+                                "mqtt error with open valves \
+                                 — grace period active: {e}"
+                            );
+                        } else {
+                            warn!(
+                                consecutive_errors = mqtt_error_count,
+                                elapsed_secs = error_duration.as_secs(),
+                                "mqtt error (no valves open): {e}"
+                            );
+                        }
+
                         tokio::time::sleep(Duration::from_secs(2)).await;
                     }
                 }
+            }
+
+            // ── Critical task monitoring ──────────────────────────
+            result = &mut watchdog_handle => {
+                error!("CRITICAL: valve watchdog task exited unexpectedly: {result:?}");
+                exit_reason = "watchdog task died";
+                break;
+            }
+
+            result = &mut scheduler_handle => {
+                error!("CRITICAL: scheduler task exited unexpectedly: {result:?}");
+                exit_reason = "scheduler task died";
+                break;
+            }
+
+            result = &mut web_handle => {
+                error!("web server task exited unexpectedly: {result:?}");
+                // Web server dying is not safety-critical; continue running.
+                // Don't break — MQTT loop + scheduler + watchdog still work.
+            }
+
+            result = &mut prune_handle => {
+                error!("data pruner task exited unexpectedly: {result:?}");
+                // Not safety-critical; log and continue.
+            }
+
+            result = &mut backup_handle => {
+                error!("database backup task exited unexpectedly: {result:?}");
+                // Not safety-critical; log and continue.
+            }
+
+            result = &mut heartbeat_handle => {
+                error!("node heartbeat monitor exited unexpectedly: {result:?}");
+                // Not safety-critical; log and continue.
             }
 
             _ = &mut ctrl_c => {
@@ -350,6 +664,15 @@ async fn main() -> Result<()> {
     )
     .await;
 
+    // Final database backup before exit.
+    if let Some(ref dest) = db_backup_path {
+        info!("performing final database backup");
+        match db.backup(dest).await {
+            Ok(()) => info!(path = %dest, "final database backup complete"),
+            Err(e) => error!("final database backup failed: {e:#}"),
+        }
+    }
+
     // Best-effort offline announcement before exit.
     let _ = client
         .publish("status/hub", QoS::AtLeastOnce, true, b"offline".to_vec())
@@ -363,6 +686,13 @@ async fn main() -> Result<()> {
 // Telemetry handling (with sensor failure detection)
 // ---------------------------------------------------------------------------
 
+/// Maximum MQTT telemetry payload size (4 KiB). Anything larger is likely
+/// malicious or a bug — a normal reading message is a few hundred bytes.
+const MAX_TELEMETRY_PAYLOAD_BYTES: usize = 4096;
+
+/// Maximum number of sensor readings in a single telemetry message.
+const MAX_READINGS_PER_MESSAGE: usize = 32;
+
 async fn handle_telemetry(
     node_id: &str,
     payload: &[u8],
@@ -370,6 +700,21 @@ async fn handle_telemetry(
     db: &Db,
     shared: &RwLock<SystemState>,
 ) {
+    if payload.len() > MAX_TELEMETRY_PAYLOAD_BYTES {
+        warn!(
+            node = %node_id,
+            bytes = payload.len(),
+            "telemetry payload too large — dropping"
+        );
+        let mut st = shared.write().await;
+        st.record_error(format!(
+            "telemetry from {node_id} dropped: {} bytes exceeds {} limit",
+            payload.len(),
+            MAX_TELEMETRY_PAYLOAD_BYTES
+        ));
+        return;
+    }
+
     let msg: ReadingMsg = match serde_json::from_slice(payload) {
         Ok(m) => m,
         Err(e) => {
@@ -379,6 +724,21 @@ async fn handle_telemetry(
             return;
         }
     };
+
+    if msg.readings.len() > MAX_READINGS_PER_MESSAGE {
+        warn!(
+            node = %node_id,
+            count = msg.readings.len(),
+            "too many readings in message — dropping"
+        );
+        let mut st = shared.write().await;
+        st.record_error(format!(
+            "telemetry from {node_id} dropped: {} readings exceeds {} limit",
+            msg.readings.len(),
+            MAX_READINGS_PER_MESSAGE
+        ));
+        return;
+    }
 
     let mut valid_readings: Vec<SensorReading> = Vec::new();
 
@@ -437,6 +797,7 @@ async fn handle_telemetry(
 // Valve command handling (with safety limit enforcement)
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_valve_command(
     zone_id: &str,
     payload: &[u8],
@@ -445,6 +806,7 @@ async fn handle_valve_command(
     valve_opened_at: &Mutex<HashMap<String, Instant>>,
     db: &Db,
     shared: &RwLock<SystemState>,
+    max_concurrent_valves: usize,
 ) {
     let on = match parse_valve_command(payload) {
         Ok(v) => v,
@@ -457,6 +819,29 @@ async fn handle_valve_command(
     };
 
     if on {
+        // ── Concurrent valve limit ──────────────────────────────
+        {
+            let st = shared.read().await;
+            let zone_already_on = st.zones.get(zone_id).is_some_and(|z| z.on);
+            if !zone_already_on {
+                let active = st.zones.values().filter(|z| z.on).count();
+                if active >= max_concurrent_valves {
+                    drop(st);
+                    warn!(
+                        zone = %zone_id,
+                        active,
+                        limit = max_concurrent_valves,
+                        "concurrent valve limit reached — ignoring ON"
+                    );
+                    let mut st = shared.write().await;
+                    st.record_error(format!(
+                        "zone {zone_id}: ON blocked — {active}/{max_concurrent_valves} valves already open"
+                    ));
+                    return;
+                }
+            }
+        }
+
         // ── Safety limit enforcement ────────────────────────────
         let today = Db::today_yyyy_mm_dd();
         let mut blocked = false;
@@ -504,11 +889,14 @@ async fn handle_valve_command(
         }
 
         if !blocked {
-            valves.lock().await.set(zone_id, true);
-            valve_opened_at
-                .lock()
-                .await
-                .insert(zone_id.to_string(), Instant::now());
+            // Acquire both locks before opening to ensure the watchdog
+            // sees the open timestamp atomically with the GPIO state change.
+            let mut board = valves.lock().await;
+            let mut opened = valve_opened_at.lock().await;
+            board.set(zone_id, true);
+            opened.insert(zone_id.to_string(), Instant::now());
+            drop(opened);
+            drop(board);
 
             // Track daily pulse count.
             let today = Db::today_yyyy_mm_dd();
@@ -556,6 +944,31 @@ async fn handle_valve_command(
         let mut st = shared.write().await;
         st.record_valve(zone_id, false);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Node status handling (MQTT Last Will / online announcements)
+// ---------------------------------------------------------------------------
+
+async fn handle_node_status(node_id: &str, payload: &[u8], shared: &RwLock<SystemState>) {
+    let status = String::from_utf8_lossy(payload).trim().to_lowercase();
+    let online = match status.as_str() {
+        "online" => true,
+        "offline" => false,
+        _ => {
+            warn!(node = %node_id, status = %status, "unknown node status payload");
+            return;
+        }
+    };
+
+    if online {
+        info!(node = %node_id, "node online");
+    } else {
+        warn!(node = %node_id, "node offline (LWT or graceful disconnect)");
+    }
+
+    let mut st = shared.write().await;
+    st.record_node_status(node_id, online);
 }
 
 // ---------------------------------------------------------------------------

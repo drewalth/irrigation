@@ -42,6 +42,16 @@ pub(crate) fn extract_zone_id(topic: &str) -> Option<&str> {
     }
 }
 
+/// Extract node_id from "status/node/<node_id>".
+pub(crate) fn extract_node_status_id(topic: &str) -> Option<&str> {
+    let parts: Vec<&str> = topic.split('/').collect();
+    if parts.len() == 3 && parts[0] == "status" && parts[1] == "node" {
+        Some(parts[2])
+    } else {
+        None
+    }
+}
+
 /// Parse an "ON"/"OFF" payload into a bool (case-insensitive, trims whitespace).
 pub(crate) fn parse_valve_command(payload: &[u8]) -> Result<bool, String> {
     let s = String::from_utf8_lossy(payload).trim().to_uppercase();
@@ -125,6 +135,52 @@ mod tests {
     #[test]
     fn extract_zone_id_empty_string() {
         assert_eq!(extract_zone_id(""), None);
+    }
+
+    // -- extract_node_status_id ---------------------------------------------
+
+    #[test]
+    fn extract_node_status_id_valid_topic() {
+        assert_eq!(extract_node_status_id("status/node/node-a"), Some("node-a"));
+    }
+
+    #[test]
+    fn extract_node_status_id_different_node() {
+        assert_eq!(
+            extract_node_status_id("status/node/greenhouse-1"),
+            Some("greenhouse-1")
+        );
+    }
+
+    #[test]
+    fn extract_node_status_id_wrong_prefix() {
+        assert_eq!(extract_node_status_id("tele/node/node-a"), None);
+    }
+
+    #[test]
+    fn extract_node_status_id_wrong_second_segment() {
+        assert_eq!(extract_node_status_id("status/hub/something"), None);
+    }
+
+    #[test]
+    fn extract_node_status_id_too_few_segments() {
+        assert_eq!(extract_node_status_id("status/node"), None);
+    }
+
+    #[test]
+    fn extract_node_status_id_too_many_segments() {
+        assert_eq!(extract_node_status_id("status/node/a/extra"), None);
+    }
+
+    #[test]
+    fn extract_node_status_id_empty_string() {
+        assert_eq!(extract_node_status_id(""), None);
+    }
+
+    #[test]
+    fn extract_node_status_id_does_not_match_hub_status() {
+        // status/hub is a different topic, not a node status
+        assert_eq!(extract_node_status_id("status/hub"), None);
     }
 
     // -- parse_valve_command ------------------------------------------------

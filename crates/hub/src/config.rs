@@ -13,10 +13,18 @@ use crate::db::{Db, SensorConfig, ZoneConfig};
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
+    /// Maximum number of valves that can be open simultaneously. Prevents
+    /// 12 V power supply brown-out when driving many solenoid relay channels.
+    #[serde(default = "default_max_concurrent_valves")]
+    pub max_concurrent_valves: usize,
     #[serde(default)]
     pub zones: Vec<ZoneEntry>,
     #[serde(default)]
     pub sensors: Vec<SensorEntry>,
+}
+
+fn default_max_concurrent_valves() -> usize {
+    2
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,11 +54,16 @@ pub struct SensorEntry {
 // GPIO whitelist
 // ---------------------------------------------------------------------------
 
-/// BCM GPIO pins available on the Raspberry Pi 40-pin header for general
-/// use. GPIO 0-1 are reserved for the ID EEPROM and must never be used.
-/// GPIO 28+ are not exposed on the standard header.
+/// BCM GPIO pins safe for general-purpose relay driving on the Raspberry Pi
+/// 40-pin header. Excludes:
+///   - GPIO 0-1: ID EEPROM (must never be used)
+///   - GPIO 2-3: I2C1 (SDA/SCL) with hard-wired 1.8k pull-ups — cannot
+///     reliably drive active-low relay optocouplers
+///   - GPIO 7-11: SPI0 (CE1, CE0, MISO, MOSI, SCLK)
+///   - GPIO 14-15: UART0 (TX/RX) — used for serial console
+///   - GPIO 28+: not exposed on the standard header
 const VALID_GPIO_PINS: &[i64] = &[
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+    4, 5, 6, 12, 13, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
 ];
 
 /// Maximum single-ended reading from the ADS1115 (15-bit unsigned).
@@ -65,6 +78,10 @@ impl Config {
     /// every violation found (not just the first one).
     pub fn validate(&self) -> Result<()> {
         let mut errors: Vec<String> = Vec::new();
+
+        if self.max_concurrent_valves == 0 {
+            errors.push("max_concurrent_valves must be at least 1".to_string());
+        }
 
         self.validate_zones(&mut errors);
         self.validate_sensors(&mut errors);
@@ -180,9 +197,10 @@ impl Config {
             // ── GPIO pin whitelist ──────────────────────────────
             if !VALID_GPIO_PINS.contains(&z.valve_gpio_pin) {
                 errors.push(format!(
-                    "{}: valve_gpio_pin {} is not a valid BCM GPIO pin (allowed: 2-27)",
+                    "{}: valve_gpio_pin {} is not a safe GPIO pin (allowed: {:?})",
                     ctx(),
-                    z.valve_gpio_pin
+                    z.valve_gpio_pin,
+                    VALID_GPIO_PINS,
                 ));
             } else if !seen_pins.insert(z.valve_gpio_pin) {
                 errors.push(format!(
@@ -347,6 +365,7 @@ mod tests {
 
     fn valid_config() -> Config {
         Config {
+            max_concurrent_valves: 2,
             zones: vec![valid_zone()],
             sensors: vec![valid_sensor()],
         }
@@ -410,6 +429,7 @@ raw_wet = 12000
     #[test]
     fn empty_config_passes() {
         let cfg = Config {
+            max_concurrent_valves: 2,
             zones: vec![],
             sensors: vec![],
         };
@@ -419,6 +439,7 @@ raw_wet = 12000
     #[test]
     fn multi_zone_multi_sensor_passes() {
         let cfg = Config {
+            max_concurrent_valves: 2,
             zones: vec![
                 ZoneEntry {
                     zone_id: "z1".into(),
@@ -581,34 +602,62 @@ raw_wet = 12000
     fn zone_gpio_pin_0_rejected() {
         let mut cfg = valid_config();
         cfg.zones[0].valve_gpio_pin = 0;
-        assert_validation_err(&cfg, "not a valid BCM GPIO pin");
+        assert_validation_err(&cfg, "not a safe GPIO pin");
     }
 
     #[test]
     fn zone_gpio_pin_1_rejected() {
         let mut cfg = valid_config();
         cfg.zones[0].valve_gpio_pin = 1;
-        assert_validation_err(&cfg, "not a valid BCM GPIO pin");
+        assert_validation_err(&cfg, "not a safe GPIO pin");
     }
 
     #[test]
     fn zone_gpio_pin_28_rejected() {
         let mut cfg = valid_config();
         cfg.zones[0].valve_gpio_pin = 28;
-        assert_validation_err(&cfg, "not a valid BCM GPIO pin");
+        assert_validation_err(&cfg, "not a safe GPIO pin");
     }
 
     #[test]
     fn zone_gpio_negative_rejected() {
         let mut cfg = valid_config();
         cfg.zones[0].valve_gpio_pin = -1;
-        assert_validation_err(&cfg, "not a valid BCM GPIO pin");
+        assert_validation_err(&cfg, "not a safe GPIO pin");
     }
 
     #[test]
-    fn zone_gpio_boundary_2_accepted() {
+    fn zone_gpio_i2c_pin_2_rejected() {
         let mut cfg = valid_config();
         cfg.zones[0].valve_gpio_pin = 2;
+        assert_validation_err(&cfg, "not a safe GPIO pin");
+    }
+
+    #[test]
+    fn zone_gpio_i2c_pin_3_rejected() {
+        let mut cfg = valid_config();
+        cfg.zones[0].valve_gpio_pin = 3;
+        assert_validation_err(&cfg, "not a safe GPIO pin");
+    }
+
+    #[test]
+    fn zone_gpio_spi_pin_8_rejected() {
+        let mut cfg = valid_config();
+        cfg.zones[0].valve_gpio_pin = 8;
+        assert_validation_err(&cfg, "not a safe GPIO pin");
+    }
+
+    #[test]
+    fn zone_gpio_uart_pin_14_rejected() {
+        let mut cfg = valid_config();
+        cfg.zones[0].valve_gpio_pin = 14;
+        assert_validation_err(&cfg, "not a safe GPIO pin");
+    }
+
+    #[test]
+    fn zone_gpio_boundary_4_accepted() {
+        let mut cfg = valid_config();
+        cfg.zones[0].valve_gpio_pin = 4;
         cfg.validate().unwrap();
     }
 
@@ -622,6 +671,7 @@ raw_wet = 12000
     #[test]
     fn zone_duplicate_gpio_rejected() {
         let cfg = Config {
+            max_concurrent_valves: 2,
             zones: vec![
                 ZoneEntry {
                     zone_id: "z1".into(),
@@ -720,6 +770,7 @@ raw_wet = 12000
     #[test]
     fn multiple_errors_collected() {
         let cfg = Config {
+            max_concurrent_valves: 2,
             zones: vec![ZoneEntry {
                 zone_id: "".into(),
                 name: "".into(),
@@ -746,9 +797,43 @@ raw_wet = 12000
             "missing moisture error in: {msg}"
         );
         assert!(
-            msg.contains("not a valid BCM GPIO pin"),
+            msg.contains("not a safe GPIO pin"),
             "missing gpio error in: {msg}"
         );
+    }
+
+    // -- max_concurrent_valves --------------------------------------------
+
+    #[test]
+    fn max_concurrent_valves_zero_rejected() {
+        let cfg = Config {
+            max_concurrent_valves: 0,
+            ..valid_config()
+        };
+        assert_validation_err(&cfg, "max_concurrent_valves must be at least 1");
+    }
+
+    #[test]
+    fn max_concurrent_valves_one_accepted() {
+        let cfg = Config {
+            max_concurrent_valves: 1,
+            ..valid_config()
+        };
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn max_concurrent_valves_defaults_to_two_in_toml() {
+        // When not specified in TOML, should default to 2.
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.max_concurrent_valves, 2);
+    }
+
+    #[test]
+    fn max_concurrent_valves_parsed_from_toml() {
+        let toml_str = "max_concurrent_valves = 4\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.max_concurrent_valves, 4);
     }
 
     // -- DB integration ---------------------------------------------------

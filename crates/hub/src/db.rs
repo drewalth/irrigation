@@ -3,8 +3,8 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::{Pool, QueryBuilder, Sqlite};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use sqlx::{Pool, QueryBuilder, Row, Sqlite};
 use std::str::FromStr;
 use time::OffsetDateTime;
 
@@ -101,6 +101,7 @@ impl Db {
         let options = SqliteConnectOptions::from_str(db_url)
             .with_context(|| format!("invalid sqlite connection string: {db_url}"))?
             .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
             .foreign_keys(true);
 
         let pool = SqlitePoolOptions::new()
@@ -117,8 +118,50 @@ impl Db {
         &self.pool
     }
 
+    /// Ensures the database uses `auto_vacuum = INCREMENTAL`, which is
+    /// required for `PRAGMA incremental_vacuum` (used in pruning) to
+    /// actually reclaim freed pages.
+    ///
+    /// For **new** databases (empty file), the PRAGMA takes effect
+    /// immediately.  For **existing** databases created with the default
+    /// `auto_vacuum = NONE`, a one-time `VACUUM` restructures the file.
+    /// Both commands must run outside a transaction, so this cannot live
+    /// in a sqlx migration file.
+    async fn ensure_incremental_auto_vacuum(&self) -> Result<()> {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .context("failed to acquire connection for auto_vacuum setup")?;
+
+        let row = sqlx::query("PRAGMA auto_vacuum")
+            .fetch_one(&mut *conn)
+            .await
+            .context("failed to query auto_vacuum mode")?;
+        let current: i32 = row.get(0);
+
+        if current != 2 {
+            // 0 = NONE (default), 1 = FULL, 2 = INCREMENTAL
+            tracing::info!(
+                current,
+                "converting database to auto_vacuum=INCREMENTAL (one-time VACUUM)"
+            );
+            sqlx::query("PRAGMA auto_vacuum = INCREMENTAL")
+                .execute(&mut *conn)
+                .await
+                .context("failed to set auto_vacuum = INCREMENTAL")?;
+            sqlx::query("VACUUM")
+                .execute(&mut *conn)
+                .await
+                .context("failed to VACUUM after setting auto_vacuum")?;
+        }
+
+        Ok(())
+    }
+
     /// Runs SQLx migrations from ./migrations.
     pub async fn migrate(&self) -> Result<()> {
+        self.ensure_incremental_auto_vacuum().await?;
         sqlx::migrate!("./migrations")
             .run(&self.pool)
             .await
@@ -643,6 +686,94 @@ impl Db {
             .context("db health check failed")?;
         Ok(())
     }
+
+    /// Create a consistent backup of the database at `dest_path`.
+    ///
+    /// Uses SQLite `VACUUM INTO` to produce an atomic, defragmented copy
+    /// safe to call while the database is in active use.  The backup is
+    /// written to a temporary file and atomically renamed so a crash
+    /// mid-write cannot corrupt the previous good backup.
+    pub async fn backup(&self, dest_path: &str) -> Result<()> {
+        // Ensure the destination directory exists.
+        if let Some(parent) = std::path::Path::new(dest_path).parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("create backup dir {}", parent.display()))?;
+        }
+
+        let tmp_path = format!("{dest_path}.tmp");
+
+        // Remove any leftover temp file from a previous failed backup.
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+
+        // VACUUM INTO produces a defragmented, consistent snapshot.
+        // The path must be a SQL string literal (not a bind parameter).
+        let escaped = tmp_path.replace('\'', "''");
+        sqlx::query(&format!("VACUUM INTO '{escaped}'"))
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("VACUUM INTO '{tmp_path}' failed"))?;
+
+        // Atomically replace the previous backup.
+        tokio::fs::rename(&tmp_path, dest_path)
+            .await
+            .with_context(|| format!("rename '{tmp_path}' -> '{dest_path}' failed"))?;
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Backup / restore helpers (SD card wear mitigation)
+// ---------------------------------------------------------------------------
+
+/// Extract the filesystem path from a SQLite connection URL.
+///
+/// Returns `None` for in-memory databases or non-sqlite URLs.
+pub fn db_file_path(db_url: &str) -> Option<String> {
+    let stripped = db_url.strip_prefix("sqlite:")?;
+    if stripped.starts_with(":memory:") || stripped.is_empty() {
+        return None;
+    }
+    let path = stripped.split('?').next().unwrap_or(stripped);
+    if path.is_empty() {
+        return None;
+    }
+    Some(path.to_string())
+}
+
+/// Restore a database backup to the working path if the working DB does
+/// not exist or is empty (e.g. after a tmpfs reboot).
+///
+/// Call **before** [`Db::connect`] when using a RAM-backed working directory.
+/// Returns `true` if a restore was performed.
+pub fn restore_from_backup(working_path: &str, backup_path: &str) -> Result<bool> {
+    let backup = std::path::Path::new(backup_path);
+    if !backup.exists() {
+        tracing::info!(
+            backup_path,
+            "no backup file found — starting with fresh database"
+        );
+        return Ok(false);
+    }
+
+    let working = std::path::Path::new(working_path);
+    let needs_restore =
+        !working.exists() || working.metadata().map(|m| m.len() == 0).unwrap_or(true);
+
+    if needs_restore {
+        if let Some(parent) = working.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create dir {}", parent.display()))?;
+        }
+        std::fs::copy(backup, working)
+            .with_context(|| format!("restore backup '{backup_path}' -> '{working_path}'"))?;
+        tracing::info!(backup_path, working_path, "database restored from backup");
+        Ok(true)
+    } else {
+        tracing::debug!(working_path, "working database exists — skipping restore");
+        Ok(false)
+    }
 }
 
 #[cfg(test)]
@@ -784,5 +915,125 @@ mod tests {
     async fn health_check_succeeds() {
         let db = Db::connect("sqlite::memory:").await.unwrap();
         db.health_check().await.unwrap();
+    }
+
+    // -- db_file_path -------------------------------------------------------
+
+    #[test]
+    fn file_path_absolute_with_query() {
+        assert_eq!(
+            db_file_path("sqlite:/home/pi/irrigation.db?mode=rwc"),
+            Some("/home/pi/irrigation.db".to_string())
+        );
+    }
+
+    #[test]
+    fn file_path_relative() {
+        assert_eq!(
+            db_file_path("sqlite:irrigation.db?mode=rwc"),
+            Some("irrigation.db".to_string())
+        );
+    }
+
+    #[test]
+    fn file_path_no_query_string() {
+        assert_eq!(
+            db_file_path("sqlite:/tmp/test.db"),
+            Some("/tmp/test.db".to_string())
+        );
+    }
+
+    #[test]
+    fn file_path_memory_returns_none() {
+        assert_eq!(db_file_path("sqlite::memory:"), None);
+    }
+
+    #[test]
+    fn file_path_non_sqlite_returns_none() {
+        assert_eq!(db_file_path("postgres://localhost/db"), None);
+    }
+
+    // -- restore_from_backup ------------------------------------------------
+
+    #[test]
+    fn restore_no_backup_returns_false() {
+        let result = restore_from_backup("/nonexistent/working.db", "/nonexistent/backup.db");
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn restore_skips_existing_db() {
+        let dir =
+            std::env::temp_dir().join(format!("irrigation_restore_skip_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let working = dir.join("existing.db");
+        let backup = dir.join("backup.db");
+        std::fs::write(&working, b"existing").unwrap();
+        std::fs::write(&backup, b"backup").unwrap();
+
+        let restored =
+            restore_from_backup(working.to_str().unwrap(), backup.to_str().unwrap()).unwrap();
+        assert!(!restored);
+        assert_eq!(std::fs::read(&working).unwrap(), b"existing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- backup + restore round-trip ----------------------------------------
+
+    #[tokio::test]
+    async fn backup_and_restore_round_trip() {
+        let dir =
+            std::env::temp_dir().join(format!("irrigation_backup_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let db_path = dir.join("test.db");
+        let backup_path = dir.join("backup.db");
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+
+        // Create and populate
+        let db = Db::connect(&db_url).await.unwrap();
+        db.migrate().await.unwrap();
+        db.upsert_zone(&ZoneConfig {
+            zone_id: "z1".into(),
+            name: "Test".into(),
+            min_moisture: 0.3,
+            target_moisture: 0.5,
+            pulse_sec: 30,
+            soak_min: 20,
+            max_open_sec_per_day: 180,
+            max_pulses_per_day: 6,
+            stale_timeout_min: 30,
+            valve_gpio_pin: 17,
+        })
+        .await
+        .unwrap();
+
+        // Backup
+        let backup_str = backup_path.to_str().unwrap();
+        db.backup(backup_str).await.unwrap();
+        assert!(backup_path.exists());
+
+        // Drop the original DB and remove its files
+        drop(db);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+
+        // Restore
+        let restored = restore_from_backup(db_path.to_str().unwrap(), backup_str).unwrap();
+        assert!(restored);
+
+        // Verify data survived
+        let db = Db::connect(&db_url).await.unwrap();
+        let zones = db.load_zones().await.unwrap();
+        assert_eq!(zones.len(), 1);
+        assert_eq!(zones[0].zone_id, "z1");
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

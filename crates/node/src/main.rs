@@ -1,7 +1,7 @@
 //! Sensor node: periodically publishes soil moisture readings over MQTT.
 //! Currently uses fake data; real ADS1115 integration is on the roadmap.
 
-use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
+use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS};
 use serde::Serialize;
 use std::{env, time::Duration};
 use tokio::time::sleep;
@@ -19,10 +19,9 @@ struct ReadingMsg {
 }
 
 fn now_unix() -> i64 {
-    // Good enough for v1; you can switch to time::OffsetDateTime later
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock before epoch")
+        .unwrap_or_default()
         .as_secs() as i64
 }
 
@@ -50,17 +49,46 @@ async fn main() -> anyhow::Result<()> {
 
     let client_id = format!("irrigation-node-{}", node_id);
 
+    let status_topic = format!("status/node/{}", node_id);
+
     let mut mqttoptions = MqttOptions::new(client_id, broker, port);
     mqttoptions.set_keep_alive(Duration::from_secs(30));
 
+    // Last Will Testament: broker publishes "offline" (retained) if the node
+    // disconnects ungracefully.  The hub subscribes to status/node/+ to track
+    // which nodes are alive.
+    mqttoptions.set_last_will(LastWill::new(
+        &status_topic,
+        b"offline".to_vec(),
+        QoS::AtLeastOnce,
+        true,
+    ));
+
+    // MQTT authentication — required for production (see deploy/mosquitto-production.conf).
+    if let (Ok(user), Ok(pass)) = (env::var("MQTT_USER"), env::var("MQTT_PASS")) {
+        mqttoptions.set_credentials(user, pass);
+        tracing::info!("mqtt: using password authentication");
+    } else {
+        tracing::warn!("MQTT_USER / MQTT_PASS not set — connecting without authentication");
+    }
+
     let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
 
-    // In V1: we only publish. But we still run the eventloop to keep connection alive.
+    // Run the eventloop and announce online status on every (re)connect.
+    let status_client = client.clone();
+    let el_status_topic = status_topic.clone();
     tokio::spawn(async move {
         loop {
             match eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     tracing::info!("node connected to mqtt");
+                    // Announce online (retained) — mirrors the LWT "offline".
+                    if let Err(e) = status_client
+                        .publish(&el_status_topic, QoS::AtLeastOnce, true, b"online".to_vec())
+                        .await
+                    {
+                        tracing::error!("failed to publish online status: {e}");
+                    }
                 }
                 Ok(_) => {}
                 Err(e) => {

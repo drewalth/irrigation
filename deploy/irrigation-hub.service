@@ -11,16 +11,40 @@ WorkingDirectory=/home/pi
 ExecStart=/home/pi/irrigation-hub
 Restart=always
 RestartSec=5
-WatchdogSec=30
+# NOTE: WatchdogSec removed — the binary does not implement sd_notify yet.
+# Re-add once sd-notify crate is integrated with Type=notify.
+
+# tmpfs-backed working directory for the database (survives service restarts,
+# cleared on reboot).  The hub restores from DB_BACKUP_PATH on startup.
+RuntimeDirectory=irrigation-hub
 
 # Environment
 Environment=MQTT_HOST=127.0.0.1
 Environment=MQTT_PORT=1883
-Environment=DB_URL=sqlite:/home/pi/irrigation/irrigation.db?mode=rwc
+Environment=MQTT_USER=irrigation-hub
+Environment=MQTT_PASS=CHANGEME
 Environment=CONFIG_PATH=/home/pi/irrigation/config.toml
 Environment=RELAY_ACTIVE_LOW=true
+
+# Database: run from tmpfs to eliminate SD card wear from frequent sensor
+# writes.  A periodic backup is saved to the SD card path and automatically
+# restored on reboot.  To write directly to persistent storage (e.g. USB
+# SSD), change DB_URL to the SD card path and remove DB_BACKUP_PATH.
+Environment=DB_URL=sqlite:/run/irrigation-hub/irrigation.db?mode=rwc
+Environment=DB_BACKUP_PATH=/home/pi/irrigation/irrigation.db
+Environment=DB_BACKUP_INTERVAL_SEC=1800
 Environment=WEB_PORT=8080
 Environment=RUST_LOG=info
+
+# Web server bind address: defaults to 127.0.0.1 (localhost only).
+# For direct access without a reverse proxy, set to 0.0.0.0 AND enable TLS.
+Environment=WEB_BIND=127.0.0.1
+
+# TLS: uncomment and set paths to PEM-encoded cert/key for HTTPS.
+# Requires the hub binary to be built with --features tls.
+# When enabled, set WEB_BIND=0.0.0.0 to accept remote connections.
+#Environment=TLS_CERT=/home/pi/irrigation/tls/cert.pem
+#Environment=TLS_KEY=/home/pi/irrigation/tls/key.pem
 
 # Hardening
 ProtectSystem=strict

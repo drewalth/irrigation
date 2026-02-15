@@ -1,11 +1,11 @@
 //! In-memory system state for the live web dashboard: node telemetry, zone
 //! valve status, and a capped event ring buffer.
 
-use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
+use time::OffsetDateTime;
 use tokio::sync::RwLock;
 
 /// Maximum number of events retained in the ring buffer.
@@ -31,7 +31,10 @@ pub struct SystemState {
 
 #[derive(Clone, Serialize)]
 pub struct NodeState {
-    pub last_seen: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub last_seen: OffsetDateTime,
+    /// Whether the node is connected to MQTT (tracked via LWT status messages).
+    pub online: bool,
     pub readings: Vec<SensorReading>,
 }
 
@@ -45,12 +48,14 @@ pub struct SensorReading {
 pub struct ZoneState {
     pub on: bool,
     pub gpio_pin: u8,
-    pub last_changed: Option<DateTime<Utc>>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub last_changed: Option<OffsetDateTime>,
 }
 
 #[derive(Clone, Serialize)]
 pub struct SystemEvent {
-    pub ts: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub ts: OffsetDateTime,
     pub kind: EventKind,
     pub detail: String,
 }
@@ -107,7 +112,7 @@ impl SystemState {
 
     /// Record a telemetry reading from a node.
     pub fn record_reading(&mut self, node_id: &str, readings: Vec<SensorReading>) {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
 
         let detail = format!(
             "{node_id}: {}",
@@ -122,6 +127,7 @@ impl SystemState {
             node_id.to_string(),
             NodeState {
                 last_seen: now,
+                online: true, // receiving data proves the node is alive
                 readings,
             },
         );
@@ -129,11 +135,32 @@ impl SystemState {
         self.push_event(EventKind::Reading, detail);
     }
 
+    /// Record a node's online/offline status from an MQTT LWT or status
+    /// announcement on `status/node/<node_id>`.
+    pub fn record_node_status(&mut self, node_id: &str, online: bool) {
+        let now = OffsetDateTime::now_utc();
+        let entry = self
+            .nodes
+            .entry(node_id.to_string())
+            .or_insert_with(|| NodeState {
+                last_seen: now,
+                online: false,
+                readings: Vec::new(),
+            });
+        entry.online = online;
+        if online {
+            entry.last_seen = now;
+        }
+
+        let status_str = if online { "online" } else { "offline" };
+        self.push_event(EventKind::System, format!("node {node_id} {status_str}"));
+    }
+
     /// Record a valve state change.
     pub fn record_valve(&mut self, zone_id: &str, on: bool) {
         if let Some(zone) = self.zones.get_mut(zone_id) {
             zone.on = on;
-            zone.last_changed = Some(Utc::now());
+            zone.last_changed = Some(OffsetDateTime::now_utc());
         }
 
         let state_str = if on { "ON" } else { "OFF" };
@@ -157,7 +184,7 @@ impl SystemState {
 
     /// Force all zone states to OFF (used during emergency shutdowns / MQTT errors).
     pub fn set_all_zones_off(&mut self) {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         for zone in self.zones.values_mut() {
             if zone.on {
                 zone.on = false;
@@ -182,7 +209,7 @@ impl SystemState {
             self.events.pop_front();
         }
         self.events.push_back(SystemEvent {
-            ts: Utc::now(),
+            ts: OffsetDateTime::now_utc(),
             kind,
             detail,
         });
@@ -268,6 +295,7 @@ mod tests {
 
         assert!(st.nodes.contains_key("node-a"));
         assert_eq!(st.nodes["node-a"].readings.len(), 2);
+        assert!(st.nodes["node-a"].online);
     }
 
     #[test]
@@ -314,6 +342,78 @@ mod tests {
         assert_eq!(st.nodes.len(), 2);
         assert!(st.nodes.contains_key("node-a"));
         assert!(st.nodes.contains_key("node-b"));
+    }
+
+    // -- record_node_status -------------------------------------------------
+
+    #[test]
+    fn record_node_status_online_creates_entry() {
+        let mut st = two_zone_state();
+        st.record_node_status("node-a", true);
+
+        assert!(st.nodes.contains_key("node-a"));
+        assert!(st.nodes["node-a"].online);
+        assert!(st.nodes["node-a"].readings.is_empty());
+    }
+
+    #[test]
+    fn record_node_status_offline_creates_entry() {
+        let mut st = two_zone_state();
+        st.record_node_status("node-a", false);
+
+        assert!(st.nodes.contains_key("node-a"));
+        assert!(!st.nodes["node-a"].online);
+    }
+
+    #[test]
+    fn record_node_status_offline_preserves_readings() {
+        let mut st = two_zone_state();
+        st.record_reading("node-a", sample_readings());
+        assert_eq!(st.nodes["node-a"].readings.len(), 2);
+
+        st.record_node_status("node-a", false);
+        assert!(!st.nodes["node-a"].online);
+        // Readings should still be there — only online flag changed
+        assert_eq!(st.nodes["node-a"].readings.len(), 2);
+    }
+
+    #[test]
+    fn record_node_status_updates_last_seen_on_online() {
+        let mut st = two_zone_state();
+        st.record_node_status("node-a", false);
+        let first_seen = st.nodes["node-a"].last_seen;
+
+        st.record_node_status("node-a", true);
+        assert!(st.nodes["node-a"].last_seen >= first_seen);
+    }
+
+    #[test]
+    fn record_node_status_does_not_update_last_seen_on_offline() {
+        let mut st = two_zone_state();
+        st.record_node_status("node-a", true);
+        let seen_when_online = st.nodes["node-a"].last_seen;
+
+        st.record_node_status("node-a", false);
+        // last_seen should not have been updated for offline
+        assert_eq!(st.nodes["node-a"].last_seen, seen_when_online);
+    }
+
+    #[test]
+    fn record_node_status_creates_system_event() {
+        let mut st = two_zone_state();
+        st.record_node_status("node-a", true);
+
+        assert_eq!(st.events.len(), 1);
+        assert!(matches!(st.events[0].kind, EventKind::System));
+        assert_eq!(st.events[0].detail, "node node-a online");
+    }
+
+    #[test]
+    fn record_node_status_offline_event_detail() {
+        let mut st = two_zone_state();
+        st.record_node_status("node-a", false);
+
+        assert_eq!(st.events[0].detail, "node node-a offline");
     }
 
     // -- record_valve -------------------------------------------------------

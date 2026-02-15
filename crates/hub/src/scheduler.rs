@@ -56,6 +56,7 @@ pub async fn run(
     zone_configs: HashMap<String, ZoneConfig>,
     mqtt: AsyncClient,
     shared: SharedState,
+    max_concurrent_valves: usize,
 ) {
     let mut states: HashMap<String, ZoneScheduleState> = zone_configs
         .keys()
@@ -71,22 +72,50 @@ pub async fn run(
     info!(
         zones = zone_configs.len(),
         tick_sec = TICK_INTERVAL_SEC,
+        max_concurrent_valves,
         "scheduler started"
     );
     {
         let mut st = shared.write().await;
-        st.record_scheduler("scheduler started".to_string());
+        st.record_scheduler(format!(
+            "scheduler started (max concurrent valves: {max_concurrent_valves})"
+        ));
     }
 
     loop {
         ticker.tick().await;
+
+        // Snapshot how many valves are already open from SharedState, then
+        // track any additional ones started in *this* tick.  MQTT round-trips
+        // take ~ms to update SharedState, so without the local counter two
+        // Idle zones evaluated in the same tick could both publish ON.
+        let base_active = {
+            let st = shared.read().await;
+            st.zones.values().filter(|z| z.on).count()
+        };
+        let mut started_this_tick: usize = 0;
 
         for (zone_id, zone_cfg) in &zone_configs {
             let zone_state = states.get_mut(zone_id).expect("state map in sync");
 
             match zone_state {
                 ZoneScheduleState::Idle => {
-                    handle_idle(zone_id, zone_cfg, zone_state, &db, &mqtt, &shared).await;
+                    if base_active + started_this_tick >= max_concurrent_valves {
+                        continue;
+                    }
+                    handle_idle(
+                        zone_id,
+                        zone_cfg,
+                        zone_state,
+                        &db,
+                        &mqtt,
+                        &shared,
+                        max_concurrent_valves,
+                    )
+                    .await;
+                    if matches!(zone_state, ZoneScheduleState::Watering { .. }) {
+                        started_this_tick += 1;
+                    }
                 }
                 ZoneScheduleState::Watering { since } => {
                     handle_watering(zone_id, zone_cfg, *since, zone_state, &mqtt, &shared).await;
@@ -111,6 +140,7 @@ async fn handle_idle(
     db: &Db,
     mqtt: &AsyncClient,
     shared: &SharedState,
+    max_concurrent_valves: usize,
 ) {
     // ── Guard: MQTT must be connected ────────────────────────────────
     {
@@ -123,6 +153,12 @@ async fn handle_idle(
             if z.on {
                 return;
             }
+        }
+        // ── Guard: concurrent valve limit ────────────────────────────
+        // Belt-and-suspenders with the tick-level counter in run().
+        let active = st.zones.values().filter(|z| z.on).count();
+        if active >= max_concurrent_valves {
+            return;
         }
     }
 
@@ -422,7 +458,7 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -440,7 +476,7 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -458,7 +494,7 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
 
         assert!(matches!(state, ZoneScheduleState::Watering { .. }));
     }
@@ -473,7 +509,7 @@ mod tests {
         // mqtt_connected defaults to false
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -492,7 +528,7 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -516,7 +552,7 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -640,8 +676,55 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared).await;
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
+    }
+
+    // -- Idle: concurrent valve limit reached → stays idle ----------------
+
+    #[tokio::test]
+    async fn idle_concurrent_limit_reached_stays_idle() {
+        let db = seeded_db(&[0.1, 0.1, 0.1, 0.1, 0.1]).await;
+        let (mqtt, _el) = test_mqtt();
+
+        // Two-zone shared state: z2 already has its valve ON.
+        let shared: SharedState = Arc::new(RwLock::new(SystemState::new(&[
+            ("z1".to_string(), 17),
+            ("z2".to_string(), 27),
+        ])));
+        {
+            let mut st = shared.write().await;
+            st.mqtt_connected = true;
+            st.record_valve("z2", true);
+        }
+
+        let mut state = ZoneScheduleState::Idle;
+        // max_concurrent_valves = 1 → z2 fills the single slot.
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 1).await;
+
+        assert!(matches!(state, ZoneScheduleState::Idle));
+    }
+
+    #[tokio::test]
+    async fn idle_concurrent_limit_not_reached_starts_watering() {
+        let db = seeded_db(&[0.1, 0.1, 0.1, 0.1, 0.1]).await;
+        let (mqtt, _el) = test_mqtt();
+
+        let shared: SharedState = Arc::new(RwLock::new(SystemState::new(&[
+            ("z1".to_string(), 17),
+            ("z2".to_string(), 27),
+        ])));
+        {
+            let mut st = shared.write().await;
+            st.mqtt_connected = true;
+            st.record_valve("z2", true); // z2 is on
+        }
+
+        let mut state = ZoneScheduleState::Idle;
+        // max_concurrent_valves = 2 → one slot still available.
+        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2).await;
+
+        assert!(matches!(state, ZoneScheduleState::Watering { .. }));
     }
 }

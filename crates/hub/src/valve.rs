@@ -24,14 +24,20 @@ impl ValveBoard {
         let mut pins = HashMap::new();
 
         for (zone_id, pin_num) in zone_to_gpio {
-            let mut pin = gpio.get(*pin_num)?.into_output();
-
-            // Fail-safe: ensure "OFF" at startup
-            if active_low {
-                pin.set_high(); // active-low relay OFF
+            // Atomic pin init: set the correct OFF level *during* the
+            // output-mode switch so the relay never sees a brief glitch.
+            // (into_output() defaults to LOW, which activates active-low relays.)
+            let mut pin = if active_low {
+                gpio.get(*pin_num)?.into_output_high() // active-low: OFF = HIGH
             } else {
-                pin.set_low(); // active-high relay OFF
-            }
+                gpio.get(*pin_num)?.into_output_low() // active-high: OFF = LOW
+            };
+
+            // Prevent rppal from resetting the pin to input mode (floating)
+            // when OutputPin is dropped.  Our Drop impl already calls all_off()
+            // to drive pins to the safe OFF level — floating after that would
+            // risk relay chatter on boards with weak pull-ups.
+            pin.set_reset_on_drop(false);
 
             pins.insert(zone_id.clone(), pin);
         }
