@@ -113,11 +113,6 @@ impl Db {
         Ok(Self { pool })
     }
 
-    #[allow(dead_code)]
-    pub fn pool(&self) -> &Pool<Sqlite> {
-        &self.pool
-    }
-
     /// Ensures the database uses `auto_vacuum = INCREMENTAL`, which is
     /// required for `PRAGMA incremental_vacuum` (used in pruning) to
     /// actually reclaim freed pages.
@@ -336,7 +331,10 @@ impl Db {
             .collect())
     }
 
-    #[allow(dead_code)] // reserved for future per-node diagnostics
+    /// List sensors assigned to a specific node.  Not yet called from
+    /// production code — kept for the planned per-node diagnostics API
+    /// endpoint and used in tests.
+    #[allow(dead_code)]
     pub async fn sensors_for_node(&self, node_id: &str) -> Result<Vec<SensorConfig>> {
         let rows = sqlx::query!(
             r#"

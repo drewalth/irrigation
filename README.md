@@ -1,5 +1,8 @@
 # Irrigation — DIY Distributed IoT Plant Watering System
 
+[![CI](https://github.com/drewalth/irrigation/actions/workflows/ci.yml/badge.svg)](https://github.com/drewalth/irrigation/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 ![Irrigation System](https://www.drewalth.com/_astro/irrigation.02sYVLOS_tTYGC.webp)
 
 > [!IMPORTANT]
@@ -159,9 +162,6 @@ Irrigation systems can cause real damage. Safety is a first-class concern.
 
 ### Next
 
-- ADS1115 real sensor integration
-- Moisture calibration workflow
-- Automatic watering logic (zone state machine triggers)
 - Predictive watering
 - Remote configuration via MQTT
 

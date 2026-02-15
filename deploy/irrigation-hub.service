@@ -21,8 +21,11 @@ RuntimeDirectory=irrigation-hub
 # Environment
 Environment=MQTT_HOST=127.0.0.1
 Environment=MQTT_PORT=1883
-Environment=MQTT_USER=irrigation-hub
-Environment=MQTT_PASS=CHANGEME
+# MQTT credentials: set via `sudo systemctl edit irrigation-hub` to avoid
+# storing secrets in this file.  The override creates a drop-in at
+# /etc/systemd/system/irrigation-hub.service.d/override.conf.
+#Environment=MQTT_USER=irrigation-hub
+#Environment=MQTT_PASS=
 Environment=CONFIG_PATH=/home/pi/irrigation/config.toml
 Environment=RELAY_ACTIVE_LOW=true
 

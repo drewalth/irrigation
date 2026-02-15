@@ -37,10 +37,18 @@ struct ReadingMsg {
 }
 
 fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => {
+            // System clock before UNIX epoch — can happen on Raspberry Pis
+            // without an RTC before NTP syncs.  Return 0 so callers don't
+            // panic, but log loudly so the operator notices.
+            tracing::warn!(
+                "system clock is before UNIX epoch — timestamps will be wrong until NTP syncs"
+            );
+            0
+        }
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -130,8 +138,8 @@ async fn main() -> anyhow::Result<()> {
     let mut adc_device = adc::Ads1115::new(adc_addr, adc_channels)?;
 
     // ── MQTT setup ───────────────────────────────────────────────────
-    let client_id = format!("irrigation-node-{}", node_id);
-    let status_topic = format!("status/node/{}", node_id);
+    let client_id = format!("irrigation-node-{node_id}");
+    let status_topic = format!("status/node/{node_id}");
 
     let mut mqttoptions = MqttOptions::new(client_id, broker, port);
     mqttoptions.set_keep_alive(Duration::from_secs(30));
@@ -233,7 +241,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // ── Sampling loop ────────────────────────────────────────────────
-    let topic = format!("tele/{}/reading", node_id);
+    let topic = format!("tele/{node_id}/reading");
     tracing::info!(topic = %topic, "publishing sensor readings");
 
     loop {

@@ -215,13 +215,41 @@ docker-logs:
 
 # ── CI / pre-commit ──────────────────────────────────────────────
 
-.PHONY: ci lint
+.PHONY: ci lint preflight
 
 ## Full lint pass (clippy + fmt check)
 lint: clippy fmt-check
 
 ## CI pipeline: fmt, clippy, test
 ci: fmt-check clippy test
+
+## Preflight: run all CI checks locally (mirrors .github/workflows/ci.yml)
+## Single recipe ensures sequential fail-fast execution and builds UI only once.
+preflight: _setup-db
+	@echo ""
+	@echo "══════════════════════════════════════════════════════"
+	@echo "  Preflight — running all CI checks locally"
+	@echo "══════════════════════════════════════════════════════"
+	@echo ""
+	@echo "── [1/5] Building UI ──"
+	cd $(UI_DIR) && npm ci && npm run build
+	@echo ""
+	@echo "── [2/5] Checking formatting ──"
+	cargo fmt --all -- --check
+	@echo ""
+	@echo "── [3/5] Running clippy ──"
+	cargo clippy --workspace -- -D warnings
+	@echo ""
+	@echo "── [4/5] Building workspace ──"
+	cargo build --workspace
+	@echo ""
+	@echo "── [5/5] Running tests ──"
+	cargo test --workspace
+	@echo ""
+	@echo "══════════════════════════════════════════════════════"
+	@echo "  ✓ Preflight passed — safe to push"
+	@echo "══════════════════════════════════════════════════════"
+	@echo ""
 
 # ── Help ──────────────────────────────────────────────────────────
 
@@ -270,6 +298,7 @@ help:
 	@echo "    docker-logs  Follow container logs"
 	@echo ""
 	@echo "  CI:"
+	@echo "    preflight     Run full CI pipeline locally (use before pushing)"
 	@echo "    lint          clippy + fmt-check"
 	@echo "    ci            fmt-check + clippy + test"
 	@echo ""

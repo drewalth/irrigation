@@ -589,9 +589,8 @@ async fn main() -> Result<()> {
                                 &valve_opened_at,
                                 &shared,
                                 &format!(
-                                    "mqtt error: {e} ({}s grace period expired, \
-                                     {} consecutive errors)",
-                                    MQTT_GRACE_PERIOD_SEC, mqtt_error_count
+                                    "mqtt error: {e} ({MQTT_GRACE_PERIOD_SEC}s grace period expired, \
+                                     {mqtt_error_count} consecutive errors)",
                                 ),
                             )
                             .await;
@@ -1017,8 +1016,14 @@ async fn emergency_all_off(
 }
 
 fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => {
+            // System clock before UNIX epoch — can happen on Raspberry Pis
+            // without an RTC before NTP syncs.  Return 0 so callers don't
+            // panic, but log loudly so the operator notices.
+            warn!("system clock is before UNIX epoch — timestamps will be wrong until NTP syncs");
+            0
+        }
+    }
 }

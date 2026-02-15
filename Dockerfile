@@ -34,13 +34,18 @@ FROM debian:bookworm-slim AS hub
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsqlite3-0 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -r -s /bin/false appuser \
+    && mkdir -p /data && chown appuser:appuser /data
 
 COPY --from=builder /app/target/release/irrigation-hub /usr/local/bin/
+USER appuser
 CMD ["irrigation-hub"]
 
 # ── Node runtime ─────────────────────────────────────────────────
 FROM debian:bookworm-slim AS node
 
+RUN useradd -r -s /bin/false appuser
 COPY --from=builder /app/target/release/irrigation-node /usr/local/bin/
+USER appuser
 CMD ["irrigation-node"]
