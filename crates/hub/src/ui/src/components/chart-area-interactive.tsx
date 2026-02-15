@@ -150,7 +150,7 @@ interface MoistureChartProps {
 
 export function MoistureChart({ zoneId: zoneIdProp }: MoistureChartProps = {}) {
   const [timeRange, setTimeRange] = useState("6h");
-  const [internalZoneId, setInternalZoneId] = useState("");
+  const [internalZoneId, setInternalZoneId] = useState("__all__");
 
   const zoneId = zoneIdProp ?? internalZoneId;
   const manageZone = zoneIdProp === undefined;
@@ -158,9 +158,9 @@ export function MoistureChart({ zoneId: zoneIdProp }: MoistureChartProps = {}) {
   // Derive limit from time range
   const limit = TIME_RANGES.find((r) => r.value === timeRange)?.limit ?? 360;
 
-  // Fetch data
+  // Fetch data — map "__all__" sentinel to undefined so the API returns all zones
   const { data: readings, loading } = useReadings({
-    zone_id: zoneId || undefined,
+    zone_id: zoneId === "__all__" ? undefined : zoneId || undefined,
     limit,
   });
   const { data: zones } = useZones();

@@ -10,6 +10,7 @@ export interface UsePollingResult<T> {
 /**
  * Generic polling hook. Calls `fetcher` immediately, then every `intervalMs`.
  * Automatically cleans up on unmount. Skips overlapping requests.
+ * Re-fetches immediately when `fetcher` identity changes (e.g. filter params).
  */
 export function usePolling<T>(
   fetcher: () => Promise<T>,
@@ -37,11 +38,14 @@ export function usePolling<T>(
     }
   }, []);
 
+  // Restart polling whenever the fetcher identity or interval changes.
+  // This ensures filter/param changes trigger an immediate re-fetch.
   useEffect(() => {
+    setLoading(true);
     doFetch();
     const id = setInterval(doFetch, intervalMs);
     return () => clearInterval(id);
-  }, [doFetch, intervalMs]);
+  }, [fetcher, doFetch, intervalMs]);
 
   return { data, error, loading, refetch: doFetch };
 }
