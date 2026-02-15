@@ -105,7 +105,10 @@ export function SectionCards() {
             const raw_range = sensor.raw_dry - sensor.raw_wet;
             moisture =
               raw_range !== 0
-                ? Math.max(0, Math.min(1, (sensor.raw_dry - reading.raw) / raw_range))
+                ? Math.max(
+                    0,
+                    Math.min(1, (sensor.raw_dry - reading.raw) / raw_range),
+                  )
                 : 0;
             break;
           }
@@ -185,7 +188,9 @@ export function SectionCards() {
 
       {/* ── Card 2: Active Zones / Moisture Alerts ── */}
       {isMonitor ? (
-        <Card className={`@container/card ${alertZoneIds.length > 0 ? "border-red-200 dark:border-red-900" : ""}`}>
+        <Card
+          className={`@container/card ${alertZoneIds.length > 0 ? "border-red-200 dark:border-red-900" : ""}`}
+        >
           <CardHeader>
             <CardDescription>Moisture Alerts</CardDescription>
             {statusLoading ? (

@@ -58,11 +58,11 @@ mosquitto_pub -t "valve/zone1/set" -m "OFF"
 
 `docker compose up --build` brings up the full system with zero local Rust toolchain:
 
-| Service | Description |
-|---------|-------------|
-| `mqtt` | Eclipse Mosquitto broker (no auth, port 1883) |
-| `hub` | Hub without `gpio` feature (mock valves) |
-| `node-a`, `node-b` | Two fake sensor nodes publishing every 5s |
+| Service            | Description                                   |
+| ------------------ | --------------------------------------------- |
+| `mqtt`             | Eclipse Mosquitto broker (no auth, port 1883) |
+| `hub`              | Hub without `gpio` feature (mock valves)      |
+| `node-a`, `node-b` | Two fake sensor nodes publishing every 5s     |
 
 Hub web UI: http://localhost:8080
 
@@ -99,30 +99,30 @@ make deploy-hub HUB_HOST=192.168.1.50 REMOTE_USER=admin
 
 Run `make help` for the full target list. Key targets:
 
-| Target | What it does |
-|--------|-------------|
-| `setup` | Prepare dev environment (tools, node, npm, sqlx db) |
-| `build` | Build workspace (debug), including UI |
-| `check` | Type-check without binaries |
-| `test` | Run all workspace tests |
-| `clippy` | Lint with `-D warnings` |
-| `fmt` / `fmt-check` | Format / verify formatting |
-| `ci` | `fmt-check` + `clippy` + `test` |
-| `run-hub` / `run-node` | Run a single crate locally |
-| `build-ui` | Build web UI (npm ci + vite build) |
+| Target                 | What it does                                        |
+| ---------------------- | --------------------------------------------------- |
+| `setup`                | Prepare dev environment (tools, node, npm, sqlx db) |
+| `build`                | Build workspace (debug), including UI               |
+| `check`                | Type-check without binaries                         |
+| `test`                 | Run all workspace tests                             |
+| `clippy`               | Lint with `-D warnings`                             |
+| `fmt` / `fmt-check`    | Format / verify formatting                          |
+| `ci`                   | `fmt-check` + `clippy` + `test`                     |
+| `run-hub` / `run-node` | Run a single crate locally                          |
+| `build-ui`             | Build web UI (npm ci + vite build)                  |
 
 ## Environment Variables
 
-| Variable | Used by | Default | Notes |
-|----------|---------|---------|-------|
-| `MQTT_HOST` | hub, node | `127.0.0.1` (hub), `192.168.1.10` (node) | See gotchas below |
-| `MQTT_PORT` | hub, node | `1883` | |
-| `RELAY_ACTIVE_LOW` | hub | `true` | `true`/`1` for active-low relay boards |
-| `NODE_ID` | node | `node-a` | Must be unique per node |
-| `SAMPLE_EVERY_S` | node | `300` (5 min) | Seconds between readings |
-| `WEB_PORT` | hub | `8080` | Web UI listen port |
-| `DB_URL` | hub | `sqlite:crates/hub/irrigation.db?mode=rwc` | Runtime database path |
-| `CONFIG_PATH` | hub | `config.toml` | Zone/sensor configuration file |
+| Variable           | Used by   | Default                                    | Notes                                  |
+| ------------------ | --------- | ------------------------------------------ | -------------------------------------- |
+| `MQTT_HOST`        | hub, node | `127.0.0.1` (hub), `192.168.1.10` (node)   | See gotchas below                      |
+| `MQTT_PORT`        | hub, node | `1883`                                     |                                        |
+| `RELAY_ACTIVE_LOW` | hub       | `true`                                     | `true`/`1` for active-low relay boards |
+| `NODE_ID`          | node      | `node-a`                                   | Must be unique per node                |
+| `SAMPLE_EVERY_S`   | node      | `300` (5 min)                              | Seconds between readings               |
+| `WEB_PORT`         | hub       | `8080`                                     | Web UI listen port                     |
+| `DB_URL`           | hub       | `sqlite:crates/hub/irrigation.db?mode=rwc` | Runtime database path                  |
+| `CONFIG_PATH`      | hub       | `config.toml`                              | Zone/sensor configuration file         |
 
 ### Operation Mode
 

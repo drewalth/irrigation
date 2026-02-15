@@ -139,7 +139,8 @@ function ZoneCard({
     if (latestMoisture !== null) break;
   }
 
-  const isBelowMin = latestMoisture !== null && latestMoisture < zone.min_moisture;
+  const isBelowMin =
+    latestMoisture !== null && latestMoisture < zone.min_moisture;
 
   const openSecRatio = counters
     ? counters.open_sec / zone.max_open_sec_per_day
@@ -213,8 +214,8 @@ function ZoneCard({
         )}
 
         {/* Daily Usage — auto mode only */}
-        {!isMonitor && (
-          countersLoading ? (
+        {!isMonitor &&
+          (countersLoading ? (
             <div className="space-y-2">
               <Skeleton className="h-2 w-full" />
               <Skeleton className="h-2 w-full" />
@@ -234,8 +235,7 @@ function ZoneCard({
                 label={`Pulses · ${counters?.pulses ?? 0} / ${zone.max_pulses_per_day}`}
               />
             </>
-          )
-        )}
+          ))}
       </CardContent>
     </Card>
   );

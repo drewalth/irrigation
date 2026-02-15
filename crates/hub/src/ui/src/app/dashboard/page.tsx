@@ -19,7 +19,9 @@ function EventsTabs({ mode }: { mode?: "auto" | "monitor" }) {
   return (
     <Tabs defaultValue={isMonitor ? "log" : "events"}>
       <TabsList>
-        {!isMonitor && <TabsTrigger value="events">Watering Events</TabsTrigger>}
+        {!isMonitor && (
+          <TabsTrigger value="events">Watering Events</TabsTrigger>
+        )}
         <TabsTrigger value="log">System Log</TabsTrigger>
       </TabsList>
       {!isMonitor && (

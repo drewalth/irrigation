@@ -9,6 +9,7 @@
 ## Hub Setup
 
 1. Copy files to the Pi 5:
+
    ```bash
    make deploy-hub
    scp config.toml pi@pi5.local:~/irrigation/config.toml
@@ -17,15 +18,16 @@
    ```
 
 2. On the Pi 5, install the systemd service:
+
    ```bash
    mkdir -p ~/irrigation
    sudo cp ~/irrigation-hub.service /etc/systemd/system/
    sudo cp ~/mosquitto-production.conf /etc/mosquitto/conf.d/irrigation.conf
-   
+
    # Create MQTT users
    sudo mosquitto_passwd -c /etc/mosquitto/passwd irrigation-hub
    sudo mosquitto_passwd /etc/mosquitto/passwd irrigation-node
-   
+
    sudo systemctl daemon-reload
    sudo systemctl enable irrigation-hub
    sudo systemctl start irrigation-hub
@@ -40,6 +42,7 @@
 ## Node Setup
 
 1. Copy files to the Pi Zero:
+
    ```bash
    make deploy-node
    scp deploy/irrigation-node.service pi@pizero.local:~/
@@ -136,12 +139,12 @@ On a Raspberry Pi SD card these frequent writes can cause premature wear.
 
 By default the systemd service runs the database from **tmpfs**
 (`/run/irrigation-hub/`) — a RAM-backed filesystem that eliminates SD card
-writes during normal operation.  A periodic backup (default: every 30 min) is
+writes during normal operation. A periodic backup (default: every 30 min) is
 saved to the SD card at `/home/pi/irrigation/irrigation.db`, and automatically
 restored on reboot.
 
 **Trade-off**: up to 30 minutes of sensor data may be lost on an unclean power
-loss.  Zone and sensor configuration is re-seeded from `config.toml` on every
+loss. Zone and sensor configuration is re-seeded from `config.toml` on every
 startup, so only transient data (readings, events, counters) is at risk.
 
 Additionally, `PRAGMA synchronous=NORMAL` is used in WAL mode, which halves the
@@ -150,7 +153,7 @@ the last few transactions before a crash may be lost).
 
 ### Adjusting the backup interval
 
-Edit `DB_BACKUP_INTERVAL_SEC` in the service file (value in seconds).  Lower
+Edit `DB_BACKUP_INTERVAL_SEC` in the service file (value in seconds). Lower
 values reduce potential data loss but slightly increase SD card writes.
 
 ### Disabling tmpfs (e.g. USB SSD)

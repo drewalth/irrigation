@@ -18,17 +18,12 @@ use crate::db::{Db, SensorConfig, ZoneConfig};
 /// - `Monitor`: soil moisture monitoring only — no valve actuation.  The
 ///   scheduler still evaluates moisture and records low-moisture alert events
 ///   in the event ring buffer, but never publishes ON commands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OperationMode {
+    #[default]
     Auto,
     Monitor,
-}
-
-impl Default for OperationMode {
-    fn default() -> Self {
-        OperationMode::Auto
-    }
 }
 
 // ---------------------------------------------------------------------------

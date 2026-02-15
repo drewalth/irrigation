@@ -65,12 +65,13 @@ The system uses pulse-and-soak irrigation: when moisture drops below a threshold
 
 The system supports two operation modes, configured via `mode` in `config.toml`:
 
-| Mode | Description |
-|------|-------------|
-| `auto` (default) | Full irrigation control — the scheduler monitors soil moisture and automatically opens/closes valves using pulse/soak watering cycles. |
-| `monitor` | Soil moisture monitoring only — no valve actuation. The scheduler still evaluates moisture levels and records low-moisture alerts in the event log, visible on the dashboard. Ideal for deployments without valve hardware. |
+| Mode             | Description                                                                                                                                                                                                                 |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auto` (default) | Full irrigation control — the scheduler monitors soil moisture and automatically opens/closes valves using pulse/soak watering cycles.                                                                                      |
+| `monitor`        | Soil moisture monitoring only — no valve actuation. The scheduler still evaluates moisture levels and records low-moisture alerts in the event log, visible on the dashboard. Ideal for deployments without valve hardware. |
 
 In monitor mode:
+
 - All valve commands (both scheduler-driven and manual) are blocked.
 - Valve-specific config fields (`pulse_sec`, `soak_min`, `max_open_sec_per_day`, `max_pulses_per_day`, `valve_gpio_pin`) become optional with sensible defaults.
 - The dashboard adapts to show moisture alerts instead of valve status.
@@ -126,10 +127,10 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for the full development guide, cross-compi
 
 ## MQTT Topics
 
-| Topic | Direction | Payload |
-|-------|-----------|---------|
-| `tele/<node_id>/reading` | Node -> Hub | `{ "ts": 1700000000, "readings": [{ "sensor_id": "s1", "raw": 23110 }] }` |
-| `valve/<zone_id>/set` | Hub -> Valve | `ON` / `OFF` |
+| Topic                    | Direction    | Payload                                                                   |
+| ------------------------ | ------------ | ------------------------------------------------------------------------- |
+| `tele/<node_id>/reading` | Node -> Hub  | `{ "ts": 1700000000, "readings": [{ "sensor_id": "s1", "raw": 23110 }] }` |
+| `valve/<zone_id>/set`    | Hub -> Valve | `ON` / `OFF`                                                              |
 
 ## Safety
 

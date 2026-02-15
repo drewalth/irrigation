@@ -141,6 +141,7 @@ pub async fn run(
 // ---------------------------------------------------------------------------
 
 /// Idle: check moisture and decide whether to start a watering pulse.
+#[allow(clippy::too_many_arguments)]
 async fn handle_idle(
     zone_id: &str,
     cfg: &ZoneConfig,
