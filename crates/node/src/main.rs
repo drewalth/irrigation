@@ -1,15 +1,23 @@
 //! Sensor node: periodically publishes soil moisture readings over MQTT.
 //!
 //! With the `sim` feature (default) the node generates realistic fake sensor
-//! data for local development.  Without it a real ADS1115 backend is expected
-//! (future `adc` feature).
+//! data for local development.  With the `adc` feature, reads a real ADS1115
+//! ADC over I2C (Pi Zero W production).
 
 #[cfg(feature = "sim")]
 mod sim;
 
+#[cfg(feature = "adc")]
+mod adc;
+
 // Fail at compile time if no sensor backend is enabled.
 #[cfg(not(any(feature = "sim", feature = "adc")))]
 compile_error!("Enable either `sim` (fake data) or `adc` (real ADS1115) feature");
+
+// Fail at compile time if both backends are enabled — they both define
+// `let readings` in the sampling loop and would conflict.
+#[cfg(all(feature = "sim", feature = "adc"))]
+compile_error!("Features `sim` and `adc` are mutually exclusive");
 
 use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS};
 use serde::Serialize;
@@ -104,6 +112,22 @@ async fn main() -> anyhow::Result<()> {
     // sufficient — no mutex needed.
     #[cfg(feature = "sim")]
     let watering_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // ── ADC config (only when `adc` feature is enabled) ──────────────
+    #[cfg(feature = "adc")]
+    let adc_addr: u16 = env::var("ADS1115_ADDR")
+        .ok()
+        .and_then(|s| u16::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+        .unwrap_or(0x48);
+
+    #[cfg(feature = "adc")]
+    let adc_channels = {
+        let raw = env::var("SENSOR_CHANNELS").unwrap_or_default();
+        adc::parse_channels(&raw)?
+    };
+
+    #[cfg(feature = "adc")]
+    let mut adc_device = adc::Ads1115::new(adc_addr, adc_channels)?;
 
     // ── MQTT setup ───────────────────────────────────────────────────
     let client_id = format!("irrigation-node-{}", node_id);
@@ -230,12 +254,11 @@ async fn main() -> anyhow::Result<()> {
             out
         };
 
-        // Future: #[cfg(feature = "adc")] let readings = adc::read_all(...);
+        #[cfg(feature = "adc")]
+        let readings: Vec<Reading> = adc_device.read_all();
 
-        // This block is gated so the binary cannot compile without a sensor
-        // backend — the compile_error! above catches it first.
-        #[cfg(any(feature = "sim", feature = "adc"))]
-        {
+        // Publish if we got at least one reading from whichever backend.
+        if !readings.is_empty() {
             let msg = ReadingMsg {
                 ts: now_unix(),
                 readings,
@@ -251,6 +274,8 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 tracing::info!(ts = msg.ts, "published readings");
             }
+        } else {
+            tracing::warn!("no readings produced — skipping publish");
         }
 
         sleep(Duration::from_secs(sample_every_s)).await;

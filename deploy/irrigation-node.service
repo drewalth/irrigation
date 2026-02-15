@@ -21,6 +21,10 @@ Environment=NODE_ID=node-a
 Environment=SAMPLE_EVERY_S=300
 Environment=RUST_LOG=info
 
+# ADS1115 sensor channels: comma-separated ADS1115 channel indices.
+# Channel 0 → sensor_id "s1", channel 1 → "s2", etc.
+Environment=SENSOR_CHANNELS=0,1
+
 # Hardening
 ProtectSystem=strict
 ProtectHome=read-only

@@ -172,9 +172,9 @@ cross-hub: build-ui
 cross-hub-tls: build-ui
 	cross build -p irrigation-hub --release --features gpio,tls --target $(TARGET_HUB)
 
-## Cross-compile node for Pi Zero W (armv6 / armhf) — no simulation code
+## Cross-compile node for Pi Zero W (armv6 / armhf) — real ADS1115 sensor backend
 cross-node:
-	cross build -p irrigation-node --release --no-default-features --target $(TARGET_NODE)
+	cross build -p irrigation-node --release --no-default-features --features adc --target $(TARGET_NODE)
 
 ## Cross-compile everything
 cross-all: cross-hub cross-node
