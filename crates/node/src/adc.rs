@@ -173,9 +173,10 @@ pub fn parse_channels(env_val: &str) -> anyhow::Result<Vec<ChannelMap>> {
     let mut channels = Vec::new();
 
     for (i, token) in input.split(',').enumerate() {
-        let ch: usize = token.trim().parse().map_err(|_| {
-            anyhow::anyhow!("invalid channel in SENSOR_CHANNELS: {token:?}")
-        })?;
+        let ch: usize = token
+            .trim()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid channel in SENSOR_CHANNELS: {token:?}"))?;
         anyhow::ensure!(
             ch <= MAX_CHANNEL,
             "channel {ch} in SENSOR_CHANNELS exceeds maximum ({MAX_CHANNEL})"

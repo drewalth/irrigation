@@ -332,7 +332,11 @@ mod tests {
         fn variance(sim: &mut SoilMoistureSim, n: usize) -> f64 {
             let samples = collect_samples(sim, n);
             let mean = samples.iter().map(|&v| v as f64).sum::<f64>() / n as f64;
-            samples.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / n as f64
+            samples
+                .iter()
+                .map(|&v| (v as f64 - mean).powi(2))
+                .sum::<f64>()
+                / n as f64
         }
 
         let mut stable = SoilMoistureSim::new(Scenario::Stable, 1, 26000.0, 12000.0, 600.0);

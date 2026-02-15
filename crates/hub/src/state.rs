@@ -231,7 +231,10 @@ mod tests {
 
     /// Helper: build a two-zone state for most tests.
     fn two_zone_state() -> SystemState {
-        SystemState::new(&[("zone1".to_string(), 17), ("zone2".to_string(), 27)], "auto")
+        SystemState::new(
+            &[("zone1".to_string(), 17), ("zone2".to_string(), 27)],
+            "auto",
+        )
     }
 
     /// Helper: build a simple sensor reading vec.

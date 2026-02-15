@@ -437,12 +437,12 @@ mod tests {
                 name: "Zone 1".into(),
                 min_moisture: 0.3,
                 target_moisture: 0.5,
-                pulse_sec: 0,          // irrelevant in monitor mode
-                soak_min: 0,           // irrelevant in monitor mode
+                pulse_sec: 0,            // irrelevant in monitor mode
+                soak_min: 0,             // irrelevant in monitor mode
                 max_open_sec_per_day: 0, // irrelevant in monitor mode
-                max_pulses_per_day: 0, // irrelevant in monitor mode
+                max_pulses_per_day: 0,   // irrelevant in monitor mode
                 stale_timeout_min: 30,
-                valve_gpio_pin: 0,     // irrelevant in monitor mode
+                valve_gpio_pin: 0, // irrelevant in monitor mode
             }],
             sensors: vec![valid_sensor()],
         }

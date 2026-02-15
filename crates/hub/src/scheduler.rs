@@ -427,7 +427,10 @@ mod tests {
 
     /// Build a SharedState with one zone.
     fn test_shared() -> SharedState {
-        Arc::new(RwLock::new(SystemState::new(&[("z1".to_string(), 17)], "auto")))
+        Arc::new(RwLock::new(SystemState::new(
+            &[("z1".to_string(), 17)],
+            "auto",
+        )))
     }
 
     /// Set up an in-memory DB with a zone and sensor, then seed readings.
@@ -485,7 +488,17 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
+        handle_idle(
+            "z1",
+            &test_zone_cfg(),
+            &mut state,
+            &db,
+            &mqtt,
+            &shared,
+            2,
+            OperationMode::Auto,
+        )
+        .await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -503,7 +516,17 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
+        handle_idle(
+            "z1",
+            &test_zone_cfg(),
+            &mut state,
+            &db,
+            &mqtt,
+            &shared,
+            2,
+            OperationMode::Auto,
+        )
+        .await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -521,7 +544,17 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
+        handle_idle(
+            "z1",
+            &test_zone_cfg(),
+            &mut state,
+            &db,
+            &mqtt,
+            &shared,
+            2,
+            OperationMode::Auto,
+        )
+        .await;
 
         assert!(matches!(state, ZoneScheduleState::Watering { .. }));
     }
@@ -536,7 +569,17 @@ mod tests {
         // mqtt_connected defaults to false
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
+        handle_idle(
+            "z1",
+            &test_zone_cfg(),
+            &mut state,
+            &db,
+            &mqtt,
+            &shared,
+            2,
+            OperationMode::Auto,
+        )
+        .await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -555,7 +598,17 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
+        handle_idle(
+            "z1",
+            &test_zone_cfg(),
+            &mut state,
+            &db,
+            &mqtt,
+            &shared,
+            2,
+            OperationMode::Auto,
+        )
+        .await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -579,7 +632,17 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
+        handle_idle(
+            "z1",
+            &test_zone_cfg(),
+            &mut state,
+            &db,
+            &mqtt,
+            &shared,
+            2,
+            OperationMode::Auto,
+        )
+        .await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -703,7 +766,17 @@ mod tests {
         }
 
         let mut state = ZoneScheduleState::Idle;
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
+        handle_idle(
+            "z1",
+            &test_zone_cfg(),
+            &mut state,
+            &db,
+            &mqtt,
+            &shared,
+            2,
+            OperationMode::Auto,
+        )
+        .await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -716,10 +789,10 @@ mod tests {
         let (mqtt, _el) = test_mqtt();
 
         // Two-zone shared state: z2 already has its valve ON.
-        let shared: SharedState = Arc::new(RwLock::new(SystemState::new(&[
-            ("z1".to_string(), 17),
-            ("z2".to_string(), 27),
-        ], "auto")));
+        let shared: SharedState = Arc::new(RwLock::new(SystemState::new(
+            &[("z1".to_string(), 17), ("z2".to_string(), 27)],
+            "auto",
+        )));
         {
             let mut st = shared.write().await;
             st.mqtt_connected = true;
@@ -728,7 +801,17 @@ mod tests {
 
         let mut state = ZoneScheduleState::Idle;
         // max_concurrent_valves = 1 → z2 fills the single slot.
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 1, OperationMode::Auto).await;
+        handle_idle(
+            "z1",
+            &test_zone_cfg(),
+            &mut state,
+            &db,
+            &mqtt,
+            &shared,
+            1,
+            OperationMode::Auto,
+        )
+        .await;
 
         assert!(matches!(state, ZoneScheduleState::Idle));
     }
@@ -738,10 +821,10 @@ mod tests {
         let db = seeded_db(&[0.1, 0.1, 0.1, 0.1, 0.1]).await;
         let (mqtt, _el) = test_mqtt();
 
-        let shared: SharedState = Arc::new(RwLock::new(SystemState::new(&[
-            ("z1".to_string(), 17),
-            ("z2".to_string(), 27),
-        ], "auto")));
+        let shared: SharedState = Arc::new(RwLock::new(SystemState::new(
+            &[("z1".to_string(), 17), ("z2".to_string(), 27)],
+            "auto",
+        )));
         {
             let mut st = shared.write().await;
             st.mqtt_connected = true;
@@ -750,7 +833,17 @@ mod tests {
 
         let mut state = ZoneScheduleState::Idle;
         // max_concurrent_valves = 2 → one slot still available.
-        handle_idle("z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2, OperationMode::Auto).await;
+        handle_idle(
+            "z1",
+            &test_zone_cfg(),
+            &mut state,
+            &db,
+            &mqtt,
+            &shared,
+            2,
+            OperationMode::Auto,
+        )
+        .await;
 
         assert!(matches!(state, ZoneScheduleState::Watering { .. }));
     }
@@ -765,7 +858,13 @@ mod tests {
 
         let mut state = ZoneScheduleState::Idle;
         handle_idle(
-            "z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2,
+            "z1",
+            &test_zone_cfg(),
+            &mut state,
+            &db,
+            &mqtt,
+            &shared,
+            2,
             OperationMode::Monitor,
         )
         .await;
@@ -785,7 +884,11 @@ mod tests {
             "expected at least one scheduler event"
         );
         assert!(
-            scheduler_events.last().unwrap().detail.contains("low moisture alert"),
+            scheduler_events
+                .last()
+                .unwrap()
+                .detail
+                .contains("low moisture alert"),
             "expected low moisture alert, got: {}",
             scheduler_events.last().unwrap().detail
         );
@@ -801,7 +904,13 @@ mod tests {
 
         let mut state = ZoneScheduleState::Idle;
         handle_idle(
-            "z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2,
+            "z1",
+            &test_zone_cfg(),
+            &mut state,
+            &db,
+            &mqtt,
+            &shared,
+            2,
             OperationMode::Monitor,
         )
         .await;
@@ -833,7 +942,13 @@ mod tests {
 
         let mut state = ZoneScheduleState::Idle;
         handle_idle(
-            "z1", &test_zone_cfg(), &mut state, &db, &mqtt, &shared, 2,
+            "z1",
+            &test_zone_cfg(),
+            &mut state,
+            &db,
+            &mqtt,
+            &shared,
+            2,
             OperationMode::Monitor,
         )
         .await;

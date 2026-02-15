@@ -186,9 +186,7 @@ async fn main() -> anyhow::Result<()> {
                     // Subscribe to valve commands for watering response.
                     #[cfg(feature = "sim")]
                     if let Some(ref vt) = el_valve_topic {
-                        if let Err(e) =
-                            status_client.subscribe(vt, QoS::AtLeastOnce).await
-                        {
+                        if let Err(e) = status_client.subscribe(vt, QoS::AtLeastOnce).await {
                             tracing::error!("failed to subscribe to {vt}: {e}");
                         } else {
                             tracing::info!(topic = %vt, "subscribed to valve commands");
@@ -201,9 +199,8 @@ async fn main() -> anyhow::Result<()> {
                 Ok(Event::Incoming(Packet::Publish(pub_msg))) => {
                     if let Some(ref vt) = el_valve_topic {
                         if pub_msg.topic == *vt {
-                            let payload = std::str::from_utf8(&pub_msg.payload)
-                                .unwrap_or("")
-                                .trim();
+                            let payload =
+                                std::str::from_utf8(&pub_msg.payload).unwrap_or("").trim();
                             match payload {
                                 "open" => {
                                     tracing::info!("sim: valve open — wetting sensors");
@@ -216,7 +213,10 @@ async fn main() -> anyhow::Result<()> {
                                         .store(false, std::sync::atomic::Ordering::Relaxed);
                                 }
                                 other => {
-                                    tracing::debug!(payload = other, "ignoring unknown valve payload");
+                                    tracing::debug!(
+                                        payload = other,
+                                        "ignoring unknown valve payload"
+                                    );
                                 }
                             }
                         }
@@ -240,8 +240,7 @@ async fn main() -> anyhow::Result<()> {
         // Produce readings from the active sensor backend.
         #[cfg(feature = "sim")]
         let readings: Vec<Reading> = {
-            let watering =
-                watering_flag.load(std::sync::atomic::Ordering::Relaxed);
+            let watering = watering_flag.load(std::sync::atomic::Ordering::Relaxed);
             sim.set_watering(watering);
 
             let mut out = Vec::with_capacity(sim.sensor_count());
