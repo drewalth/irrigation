@@ -29,6 +29,12 @@ pub struct SystemState {
     pub nodes: HashMap<String, NodeState>,
     pub zones: HashMap<String, ZoneState>,
     pub events: VecDeque<SystemEvent>,
+    /// CPU usage as a percentage (0.0 - 100.0).
+    pub cpu_usage_percent: f32,
+    /// Memory currently used in bytes.
+    pub memory_used_bytes: u64,
+    /// Total system memory in bytes.
+    pub memory_total_bytes: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -84,6 +90,9 @@ pub struct StatusResponse {
     pub nodes: HashMap<String, NodeState>,
     pub zones: HashMap<String, ZoneState>,
     pub events: Vec<SystemEvent>,
+    pub cpu_usage_percent: f32,
+    pub memory_used_bytes: u64,
+    pub memory_total_bytes: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +120,9 @@ impl SystemState {
             nodes: HashMap::new(),
             zones,
             events: VecDeque::with_capacity(MAX_EVENTS),
+            cpu_usage_percent: 0.0,
+            memory_used_bytes: 0,
+            memory_total_bytes: 0,
         }
     }
 
@@ -197,6 +209,13 @@ impl SystemState {
         }
     }
 
+    /// Update system resource metrics (CPU, memory).
+    pub fn update_system_metrics(&mut self, cpu: f32, mem_used: u64, mem_total: u64) {
+        self.cpu_usage_percent = cpu;
+        self.memory_used_bytes = mem_used;
+        self.memory_total_bytes = mem_total;
+    }
+
     /// Build the JSON-serialisable status snapshot.
     pub fn to_status(&self) -> StatusResponse {
         StatusResponse {
@@ -206,6 +225,9 @@ impl SystemState {
             nodes: self.nodes.clone(),
             zones: self.zones.clone(),
             events: self.events.iter().rev().cloned().collect(),
+            cpu_usage_percent: self.cpu_usage_percent,
+            memory_used_bytes: self.memory_used_bytes,
+            memory_total_bytes: self.memory_total_bytes,
         }
     }
 

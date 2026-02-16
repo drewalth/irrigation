@@ -6,11 +6,9 @@ import {
   IconList,
 } from "@tabler/icons-react";
 
-import { useStatus } from "@/hooks/use-api";
 import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -19,9 +17,6 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import { Badge } from "@/components/ui/badge";
-import { useToast } from "@/hooks/use-toast";
-import { useEffect } from "preact/hooks";
 
 const navItems = [
   { id: "overview", label: "Overview", icon: IconDashboard },
@@ -73,70 +68,6 @@ export function AppSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <Footer />
     </Sidebar>
   );
-}
-
-const Footer = () => {
-  const { data: status } = useStatus();
-  const mqttConnected = status?.mqtt_connected ?? false;
-  const uptimeSecs = status?.uptime_secs ?? 0;
-  const toast = useToast();
-
-  useEffect(() => {
-    if (mqttConnected) {
-      toast.success("MQTT connected");
-    } else {
-      toast.error("MQTT disconnected");
-    }
-  }, [mqttConnected]);
-
-  return (
-    <SidebarFooter>
-      <SidebarMenu>
-        <SidebarMenuItem>
-          <SidebarMenuButton className="pointer-events-none">
-            <span className="flex items-center justify-start gap-2">
-              <Badge
-                variant={mqttConnected ? "default" : "destructive"}
-                className="text-xs"
-              >
-                <span
-                  className={`inline-block size-1.5 rounded-full ${
-                    mqttConnected ? "bg-green-300" : "bg-red-300"
-                  }`}
-                />
-                {mqttConnected ? "Connected" : "Disconnected"}
-              </Badge>
-              {status && (
-                <Badge variant="outline" className="text-xs">
-                  {formatUptime(uptimeSecs)}
-                </Badge>
-              )}
-              {status && (
-                <Badge
-                  variant="outline"
-                  className={`text-xs ${
-                    status.mode === "monitor"
-                      ? "border-purple-500 bg-purple-50 text-purple-700 dark:bg-purple-950 dark:text-purple-400"
-                      : "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-400"
-                  }`}
-                >
-                  {status.mode === "monitor" ? "Monitor" : "Auto"}
-                </Badge>
-              )}
-            </span>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
-      </SidebarMenu>
-    </SidebarFooter>
-  );
-};
-
-function formatUptime(secs: number): string {
-  const d = Math.floor(secs / 86400);
-  const h = Math.floor((secs % 86400) / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  return `${d}d ${h}h ${m}m`;
 }

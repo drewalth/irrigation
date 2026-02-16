@@ -7,6 +7,9 @@ export interface StatusResponse {
   nodes: Record<string, NodeState>;
   zones: Record<string, ZoneState>;
   events: SystemEvent[];
+  cpu_usage_percent: number;
+  memory_used_bytes: number;
+  memory_total_bytes: number;
 }
 
 export interface NodeState {

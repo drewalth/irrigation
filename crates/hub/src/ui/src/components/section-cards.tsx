@@ -13,6 +13,11 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSensors, useStatus, useZones } from "@/hooks/use-api";
 import type { DailyCounters } from "@/types";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -33,10 +38,23 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+function formatBytes(bytes: number): string {
+  const gb = bytes / 1024 ** 3;
+  if (gb >= 1) {
+    return `${gb.toFixed(1)} GB`;
+  }
+  const mb = bytes / 1024 ** 2;
+  return `${mb.toFixed(0)} MB`;
+}
+
 // ── Section Cards ────────────────────────────────────────────────
 
 export function SectionCards() {
-  const { data: status, loading: statusLoading } = useStatus();
+  const {
+    data: status,
+    loading: statusLoading,
+    error: statusError,
+  } = useStatus();
   const { data: zones, loading: zonesLoading } = useZones();
   const { data: sensors } = useSensors();
 
@@ -84,7 +102,12 @@ export function SectionCards() {
   const totalPulses = counters.reduce((sum, c) => sum + c.pulses, 0);
 
   const mqttOk = status?.mqtt_connected ?? false;
-  const isHealthy = mqttOk;
+  const isHealthy = mqttOk && !statusError;
+
+  const cpuPercent = status?.cpu_usage_percent ?? 0;
+  const memPercent = status
+    ? (status.memory_used_bytes / status.memory_total_bytes) * 100
+    : 0;
 
   const zoneNameMap = new Map(zones?.map((z) => [z.zone_id, z.name]) ?? []);
 
@@ -144,43 +167,66 @@ export function SectionCards() {
             {statusLoading ? (
               <Skeleton className="h-5 w-20" />
             ) : (
-              <Badge
-                variant="outline"
-                className={
-                  mqttOk
-                    ? "border-green-500 bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-400"
-                    : "border-red-500 bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-400"
-                }
-              >
-                <span
-                  className={`inline-block size-2 rounded-full ${
-                    mqttOk ? "bg-green-500" : "bg-red-500"
-                  }`}
-                />
-                {mqttOk ? "Connected" : "Disconnected"}
-              </Badge>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="outline"
+                    className={
+                      isHealthy
+                        ? "border-green-500 bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-400"
+                        : "border-red-500 bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-400"
+                    }
+                  >
+                    <span
+                      className={`inline-block size-2 rounded-full ${
+                        isHealthy ? "bg-green-500" : "bg-red-500"
+                      }`}
+                    />
+                    {isHealthy ? "Connected" : "Disconnected"}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>
+                    {statusError
+                      ? statusError.message
+                      : "Connection established"}
+                  </p>
+                </TooltipContent>
+              </Tooltip>
             )}
             {!statusLoading && status && (
-              <Badge
-                variant="outline"
-                className={
-                  status.mode === "monitor"
-                    ? "border-purple-500 bg-purple-50 text-purple-700 dark:bg-purple-950 dark:text-purple-400"
-                    : "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-400"
-                }
-              >
-                {status.mode === "monitor" ? "Monitor" : "Auto"}
-              </Badge>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="outline"
+                    className={
+                      status.mode === "monitor"
+                        ? "border-purple-500 bg-purple-50 text-purple-700 dark:bg-purple-950 dark:text-purple-400 ml-1"
+                        : "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-400 ml-1"
+                    }
+                  >
+                    {status.mode === "monitor" ? "Monitor" : "Auto"}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Operation mode</p>
+                </TooltipContent>
+              </Tooltip>
             )}
           </CardAction>
         </CardHeader>
         <CardFooter className="flex-col items-start gap-1.5 text-sm">
           {statusLoading ? (
-            <Skeleton className="h-4 w-40" />
+            <>
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-4 w-48" />
+            </>
           ) : (
             <div className="text-muted-foreground">
-              MQTT {mqttOk ? "connected" : "disconnected"} · Uptime{" "}
-              {formatUptime(status!.uptime_secs)}
+              CPU {cpuPercent.toFixed(1)}% · Memory{" "}
+              {formatBytes(status!.memory_used_bytes)} /{" "}
+              {formatBytes(status!.memory_total_bytes)} ({memPercent.toFixed(1)}
+              %)
             </div>
           )}
         </CardFooter>

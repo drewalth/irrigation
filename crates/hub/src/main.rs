@@ -290,7 +290,10 @@ async fn main() -> Result<()> {
 
             {
                 let mut st = backup_shared.write().await;
-                st.record_system(format!("database backup task started (interval: {}s)", db_backup_interval));
+                st.record_system(format!(
+                    "database backup task started (interval: {}s)",
+                    db_backup_interval
+                ));
             }
 
             // Delay first backup to avoid startup I/O contention.
@@ -424,6 +427,48 @@ async fn main() -> Result<()> {
                     info!(node = %node_id, "stale node recovered");
                     st.record_system(format!("node {node_id} recovered from stale state"));
                     warned_stale.remove(node_id);
+                }
+            }
+        })
+    };
+
+    // ── System metrics collector ────────────────────────────────────
+    let mut metrics_handle = {
+        let metrics_shared = Arc::clone(&shared);
+        tokio::spawn(async move {
+            use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
+
+            let refresh_kind = RefreshKind::new()
+                .with_cpu(CpuRefreshKind::new().with_cpu_usage())
+                .with_memory(MemoryRefreshKind::everything());
+
+            let mut sys = System::new_with_specifics(refresh_kind);
+
+            info!("system metrics collector started");
+
+            // Initial refresh to populate data
+            sys.refresh_specifics(refresh_kind);
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            let mut ticker = tokio::time::interval(Duration::from_secs(3));
+
+            loop {
+                ticker.tick().await;
+
+                // Refresh system metrics
+                sys.refresh_specifics(refresh_kind);
+
+                // CPU usage (global average across all cores)
+                let cpu_usage = sys.global_cpu_usage();
+
+                // Memory metrics
+                let mem_total = sys.total_memory();
+                let mem_used = sys.used_memory();
+
+                // Update shared state
+                {
+                    let mut st = metrics_shared.write().await;
+                    st.update_system_metrics(cpu_usage, mem_used, mem_total);
                 }
             }
         })
@@ -677,6 +722,11 @@ async fn main() -> Result<()> {
                 // Not safety-critical; log and continue.
             }
 
+            result = &mut metrics_handle => {
+                error!("system metrics collector exited unexpectedly: {result:?}");
+                // Not safety-critical; log and continue.
+            }
+
             _ = &mut ctrl_c => {
                 exit_reason = "SIGINT";
                 break;
@@ -785,6 +835,8 @@ async fn handle_telemetry(
 
         let Some(sc) = sensor_map.get(&qualified_id) else {
             warn!(sensor = %qualified_id, "unknown sensor — skipping DB write");
+            let mut st = shared.write().await;
+            st.record_error(format!("unknown sensor {qualified_id} — skipping DB write"));
             continue;
         };
 

@@ -22,6 +22,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 time = { version = "0.3", features = ["macros", "serde", "serde-well-known"] }
 toml = "0.8"
+sysinfo = "0.31"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
