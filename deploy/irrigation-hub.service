@@ -24,8 +24,8 @@ Environment=MQTT_PORT=1883
 # MQTT credentials: set via `sudo systemctl edit irrigation-hub` to avoid
 # storing secrets in this file.  The override creates a drop-in at
 # /etc/systemd/system/irrigation-hub.service.d/override.conf.
-#Environment=MQTT_USER=irrigation-hub
 #Environment=MQTT_PASS=
+Environment=MQTT_USER=irrigation-hub
 Environment=CONFIG_PATH=/home/pi/irrigation/config.toml
 Environment=RELAY_ACTIVE_LOW=true
 
@@ -41,6 +41,7 @@ Environment=RUST_LOG=info
 
 # Web server bind address: defaults to 127.0.0.1 (localhost only).
 # For direct access without a reverse proxy, set to 0.0.0.0 AND enable TLS.
+# You *can* set to 0.0.0.0 and not enable TLS to make the dashboard accessible.
 Environment=WEB_BIND=127.0.0.1
 
 # TLS: uncomment and set paths to PEM-encoded cert/key for HTTPS.
