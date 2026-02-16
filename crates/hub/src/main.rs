@@ -246,6 +246,7 @@ async fn main() -> Result<()> {
     // ── Data retention pruning ──────────────────────────────────────
     let mut prune_handle = {
         let prune_db = db.clone();
+        let prune_shared = Arc::clone(&shared);
         tokio::spawn(async move {
             // Don't prune immediately on startup — wait a bit first.
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -254,9 +255,17 @@ async fn main() -> Result<()> {
             loop {
                 ticker.tick().await;
                 match prune_db.prune_old_readings(RETENTION_DAYS).await {
-                    Ok(n) if n > 0 => info!(deleted = n, "pruned old readings"),
+                    Ok(n) if n > 0 => {
+                        info!(deleted = n, "pruned old readings");
+                        let mut st = prune_shared.write().await;
+                        st.record_system(format!("pruned {n} old readings (>{RETENTION_DAYS}d)"));
+                    }
                     Ok(_) => {}
-                    Err(e) => error!("data retention prune failed: {e:#}"),
+                    Err(e) => {
+                        error!("data retention prune failed: {e:#}");
+                        let mut st = prune_shared.write().await;
+                        st.record_error(format!("data retention prune failed: {e:#}"));
+                    }
                 }
             }
         })
@@ -266,6 +275,7 @@ async fn main() -> Result<()> {
     let mut backup_handle = {
         let backup_db = db.clone();
         let backup_dest = db_backup_path.clone();
+        let backup_shared = Arc::clone(&shared);
         tokio::spawn(async move {
             let Some(dest) = backup_dest else {
                 // No backup path configured — park this task forever.
@@ -278,6 +288,11 @@ async fn main() -> Result<()> {
                 "database backup task started"
             );
 
+            {
+                let mut st = backup_shared.write().await;
+                st.record_system(format!("database backup task started (interval: {}s)", db_backup_interval));
+            }
+
             // Delay first backup to avoid startup I/O contention.
             tokio::time::sleep(Duration::from_secs(120)).await;
 
@@ -285,8 +300,16 @@ async fn main() -> Result<()> {
             loop {
                 ticker.tick().await;
                 match backup_db.backup(&dest).await {
-                    Ok(()) => info!(path = %dest, "database backup complete"),
-                    Err(e) => error!("database backup failed: {e:#}"),
+                    Ok(()) => {
+                        info!(path = %dest, "database backup complete");
+                        let mut st = backup_shared.write().await;
+                        st.record_system("database backup complete".to_string());
+                    }
+                    Err(e) => {
+                        error!("database backup failed: {e:#}");
+                        let mut st = backup_shared.write().await;
+                        st.record_error(format!("database backup failed: {e:#}"));
+                    }
                 }
             }
         })
